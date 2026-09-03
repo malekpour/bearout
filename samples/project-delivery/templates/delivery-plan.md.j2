@@ -1,0 +1,43 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# {{ project.title }}
+
+Fictional project. Runs {{ project.starts }} to {{ project.ends }} with a
+budget of {{ project.budget }} budget units.
+
+## Scope
+
+{{ scope }}
+
+## People
+
+| Participant | Role |
+| --- | --- |
+{% for person in people %}
+| {{ person.name }} | {{ person.role }} |
+{% endfor %}
+
+## Work packages
+
+| # | Work package | Owner | Budget units |
+| --- | --- | --- | --- |
+{% for wp in packages %}
+| {{ wp.sequence }} | {{ wp.title }} | {{ wp.owner }} | {{ wp.budget }} |
+{% endfor %}
+
+## Milestones
+
+{% for m in milestones %}
+### {{ m.sequence }}. {{ m.title }}
+
+Due {{ m.due }}, under `{{ m.work_package }}`.
+
+{% for d in m.deliverables %}
+- **{{ d.title }}** (acceptance within {{ d.acceptance_days }} days): {{ d.criteria }}
+{% endfor %}
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["name", "role", "project"]
+
+[properties.name]
+type = "string"
+minLength = 1
+
+[properties.role]
+enum = ["lead", "engineer", "reviewer", "sponsor"]
+
+[properties.project]
+type = "string"
+"x-bearout" = { ref = "example/project-delivery/project@1" }

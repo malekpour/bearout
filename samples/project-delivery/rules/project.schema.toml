@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# Budgets are whole abstract budget units, so arithmetic is exact.
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "budget", "starts", "ends", "lead"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.budget]
+type = "integer"
+minimum = 0
+
+[properties.starts]
+type = "string"
+format = "date"
+
+[properties.ends]
+type = "string"
+format = "date"
+
+[properties.lead]
+type = "string"
+"x-bearout" = { ref = "example/project-delivery/participant@1" }
+
+["x-bearout"]
+sections = ["Scope"]

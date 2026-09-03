@@ -1,0 +1,4 @@
+sequence,milestone,due,work_package,deliverables
+{% for m in milestones %}
+{{ m.sequence }},{{ m.title | quote }},{{ m.due }},{{ m.work_package }},{{ m.deliverables | length }}
+{% endfor %}

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+version = 1
+entry = "bearout.star"
+
+[resources]
+roots = ["plan"]
+
+[rules]
+root = "rules"
+
+[templates]
+root = "templates"
+
+[outputs]
+roots = ["generated"]
+license = "Apache-2.0"

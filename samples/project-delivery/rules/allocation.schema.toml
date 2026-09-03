@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["project", "work_package", "amount"]
+
+[properties.project]
+type = "string"
+"x-bearout" = { ref = "example/project-delivery/project@1" }
+
+[properties.work_package]
+type = "string"
+"x-bearout" = { ref = "example/project-delivery/work-package@1" }
+
+[properties.amount]
+type = "integer"
+minimum = 0
