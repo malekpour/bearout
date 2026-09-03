@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["source", "exercises"]
+oneOf = [{ required = ["expected_ast"] }, { required = ["expected_error"] }]
+
+[properties.source]
+type = "string"
+
+[properties.expected_ast]
+type = "string"
+minLength = 1
+
+[properties.expected_error]
+type = "string"
+"x-bearout" = { ref = "example/formula-language/error@1" }
+
+[properties.exercises]
+type = "array"
+minItems = 1
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/formula-language/production@1" }
+
+[properties.functions]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/formula-language/function@1" }

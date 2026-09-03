@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["name", "min_args", "chapter"]
+
+[properties.name]
+type = "string"
+pattern = "^[A-Z][A-Z0-9]*$"
+
+[properties.min_args]
+type = "integer"
+minimum = 0
+
+[properties.max_args]
+type = "integer"
+minimum = 0
+
+[properties.chapter]
+type = "string"
+"x-bearout" = { ref = "example/formula-language/chapter@1" }
+
+["x-bearout"]
+sections = ["Summary"]

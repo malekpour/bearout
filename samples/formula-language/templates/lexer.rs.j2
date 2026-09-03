@@ -1,0 +1,209 @@
+{% for line in bearout.header %}
+// {{ line }}
+{% endfor %}
+
+//! Formulo tokenizer. The fixed-token and keyword tables come from the
+//! token resources; the scanning of open-ended tokens follows the patterns
+//! documented in the syntax reference.
+
+use crate::ast::CellRef;
+
+/// A token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Token {
+{% for t in open_tokens %}
+    /// `{{ t.pattern }}`
+{% if t.variant == "Cell" %}
+    {{ t.variant }}(CellRef),
+{% else %}
+    {{ t.variant }}(String),
+{% endif %}
+{% endfor %}
+{% for t in fixed %}
+    /// `{{ t.text }}`
+    {{ t.variant }},
+{% endfor %}
+{% for t in keywords %}
+    /// `{{ t.text }}`, matched case-insensitively.
+    {{ t.variant }},
+{% endfor %}
+}
+
+/// Why tokenizing stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexErrorKind {
+    /// A character that starts no token.
+    InvalidCharacter,
+    /// A string literal without a closing quote.
+    UnterminatedString,
+}
+
+/// A tokenizing failure at a byte offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LexError {
+    pub kind: LexErrorKind,
+    pub offset: usize,
+}
+
+/// A token with the byte offset where it starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spanned {
+    pub token: Token,
+    pub offset: usize,
+}
+
+/// Fixed tokens, longest text first so that `<=` wins over `<`.
+const PUNCTUATORS: &[(&str, Token)] = &[
+{% for t in fixed %}
+    ("{{ t.text }}", Token::{{ t.variant }}),
+{% endfor %}
+];
+
+/// Keywords, compared after upper-casing the identifier.
+{% if keywords_inline %}
+const KEYWORDS: &[(&str, Token)] = &[{% for t in keywords %}("{{ t.text }}", Token::{{ t.variant }}){% if not loop.last %}, {% endif %}{% endfor %}];
+{% else %}
+const KEYWORDS: &[(&str, Token)] = &[
+{% for t in keywords %}
+    ("{{ t.text }}", Token::{{ t.variant }}),
+{% endfor %}
+];
+{% endif %}
+
+fn is_identifier_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '.'
+}
+
+/// Split `source` into tokens.
+pub fn tokenize(source: &str) -> Result<Vec<Spanned>, LexError> {
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (offset, c) = chars[i];
+        if c == ' ' || c == '\t' {
+            i += 1;
+        } else if c.is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && chars[i].1.is_ascii_digit() {
+                i += 1;
+            }
+            if i + 1 < chars.len() && chars[i].1 == '.' && chars[i + 1].1.is_ascii_digit() {
+                i += 1;
+                while i < chars.len() && chars[i].1.is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            let text: String = chars[start..i].iter().map(|(_, c)| *c).collect();
+            tokens.push(Spanned {
+                token: Token::Number(text),
+                offset,
+            });
+        } else if c == '"' {
+            let mut text = String::new();
+            i += 1;
+            loop {
+                let Some(&(_, next)) = chars.get(i) else {
+                    return Err(LexError {
+                        kind: LexErrorKind::UnterminatedString,
+                        offset,
+                    });
+                };
+                if next == '"' {
+                    if chars.get(i + 1).is_some_and(|(_, c)| *c == '"') {
+                        text.push('"');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                text.push(next);
+                i += 1;
+            }
+            tokens.push(Spanned {
+                token: Token::Str(text),
+                offset,
+            });
+        } else if let Some((cell, end)) = scan_cell(&chars, i) {
+            i = end;
+            tokens.push(Spanned {
+                token: Token::Cell(cell),
+                offset,
+            });
+        } else if is_identifier_start(c) {
+            let start = i;
+            while i < chars.len() && is_identifier_char(chars[i].1) {
+                i += 1;
+            }
+            let text: String = chars[start..i].iter().map(|(_, c)| *c).collect();
+            let upper = text.to_ascii_uppercase();
+            let token = KEYWORDS
+                .iter()
+                .find(|(keyword, _)| *keyword == upper)
+                .map_or_else(|| Token::Identifier(text), |(_, token)| token.clone());
+            tokens.push(Spanned { token, offset });
+        } else if let Some((text, token)) = PUNCTUATORS
+            .iter()
+            .find(|(text, _)| source[offset..].starts_with(text))
+        {
+            i += text.chars().count();
+            tokens.push(Spanned {
+                token: token.clone(),
+                offset,
+            });
+        } else {
+            return Err(LexError {
+                kind: LexErrorKind::InvalidCharacter,
+                offset,
+            });
+        }
+    }
+    Ok(tokens)
+}
+
+/// A cell reference at `start`: optional `$`, letters, optional `$`, digits,
+/// not followed by an identifier character.
+fn scan_cell(chars: &[(usize, char)], start: usize) -> Option<(CellRef, usize)> {
+    let mut i = start;
+    let absolute_column = chars.get(i).is_some_and(|(_, c)| *c == '$');
+    if absolute_column {
+        i += 1;
+    }
+    let column_start = i;
+    while chars.get(i).is_some_and(|(_, c)| c.is_ascii_alphabetic()) {
+        i += 1;
+    }
+    if i == column_start {
+        return None;
+    }
+    let column: String = chars[column_start..i]
+        .iter()
+        .map(|(_, c)| c.to_ascii_uppercase())
+        .collect();
+    let absolute_row = chars.get(i).is_some_and(|(_, c)| *c == '$');
+    if absolute_row {
+        i += 1;
+    }
+    let row_start = i;
+    while chars.get(i).is_some_and(|(_, c)| c.is_ascii_digit()) {
+        i += 1;
+    }
+    if i == row_start || chars.get(i).is_some_and(|(_, c)| is_identifier_char(*c)) {
+        return None;
+    }
+    let row: String = chars[row_start..i].iter().map(|(_, c)| *c).collect();
+    Some((
+        CellRef {
+            column,
+            row,
+            absolute_column,
+            absolute_row,
+        },
+        i,
+    ))
+}

@@ -1,0 +1,31 @@
+{% for line in bearout.header %}
+// {{ line }}
+{% endfor %}
+
+//! Conformance corpus: one test per example resource.
+
+use formulo::parser::{ErrorKind, parse};
+
+{% for ex in examples %}
+/// {{ ex.note }}
+#[test]
+fn {{ ex.test_name }}() {
+{% if ex.expected_ast is not none %}
+    let expr = parse({{ ex.source | quote }}).expect("example parses");
+{% if ex.inline %}
+    assert_eq!(expr.to_string(), {{ ex.expected_ast | quote }});
+{% else %}
+    assert_eq!(
+        expr.to_string(),
+        {{ ex.expected_ast | quote }}
+    );
+{% endif %}
+{% else %}
+    let error = parse({{ ex.source | quote }}).expect_err("example fails to parse");
+    assert_eq!(error.kind, ErrorKind::{{ ex.expected_error_variant }});
+{% endif %}
+}
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}

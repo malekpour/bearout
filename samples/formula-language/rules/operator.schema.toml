@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["name", "symbol", "arity", "precedence", "associativity", "token", "production"]
+
+[properties.name]
+type = "string"
+pattern = "^[a-z][a-z-]*$"
+
+[properties.symbol]
+type = "string"
+minLength = 1
+
+[properties.arity]
+enum = ["unary", "binary"]
+
+[properties.precedence]
+type = "integer"
+minimum = 1
+maximum = 10
+
+[properties.associativity]
+enum = ["left", "right"]
+
+[properties.token]
+type = "string"
+"x-bearout" = { ref = "example/formula-language/token@1" }
+
+[properties.production]
+type = "string"
+"x-bearout" = { ref = "example/formula-language/production@1" }

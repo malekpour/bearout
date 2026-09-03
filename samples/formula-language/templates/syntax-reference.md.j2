@@ -1,0 +1,64 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Formulo syntax reference
+
+Formulo is a deliberately small spreadsheet-expression language defined by
+the resources of this sample. It is **not Excel-compatible** and **not
+OpenFormula-conformant**; OpenFormula is prior art only.
+
+{% for chapter in chapters %}
+## {{ chapter.sequence }}. {{ chapter.title }}
+
+{{ chapter.purpose }}
+
+{% endfor %}
+## Tokens
+
+| Token | Kind | Text or pattern |
+| --- | --- | --- |
+{% for t in tokens %}
+| `{{ t.id }}` | {{ t.kind }} | `{{ t.text if t.text is not none else t.pattern }}` |
+{% endfor %}
+
+## Productions
+
+{% for p in productions %}
+- `{{ p.id }}`{% if p.start %} (start){% endif %}: `{{ p.rule }}`
+{% endfor %}
+
+## Operators
+
+| Operator | Symbol | Arity | Precedence | Associativity |
+| --- | --- | --- | --- | --- |
+{% for op in binary %}
+| `{{ op.name }}` | `{{ op.symbol }}` | binary | {{ op.precedence }} | {{ op.associativity }} |
+{% endfor %}
+{% for op in unary %}
+| `{{ op.name }}` | `{{ op.symbol }}` | unary | {{ op.precedence }} | {{ op.associativity }} |
+{% endfor %}
+
+## Functions
+
+| Function | Arguments | Summary |
+| --- | --- | --- |
+{% for fn in functions %}
+| `{{ fn.name }}` | {{ fn.min_args }}{% if fn.max_args is none %} or more{% else %} to {{ fn.max_args }}{% endif %} | {{ fn.summary }} |
+{% endfor %}
+
+## Errors
+
+| Kind | Summary |
+| --- | --- |
+{% for e in errors %}
+| `{{ e.variant }}` | {{ e.summary }} |
+{% endfor %}
+
+## Examples
+
+| Example | Source | Expected |
+| --- | --- | --- |
+{% for ex in examples %}
+| `{{ ex.id }}` | `{{ ex.source if ex.source != "" else "(empty)" }}` | {% if ex.expected_ast is not none %}`{{ ex.expected_ast }}`{% else %}error `{{ ex.expected_error_variant }}`{% endif %} |
+{% endfor %}

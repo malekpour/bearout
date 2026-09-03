@@ -1,0 +1,240 @@
+{% for line in bearout.header %}
+// {{ line }}
+{% endfor %}
+
+//! Formulo parser: precedence climbing over the operator table, with the
+//! function registry and error kinds from the resources.
+
+use crate::ast::{BinaryOp, Expr, UnaryOp};
+use crate::lexer::{LexError, LexErrorKind, Spanned, Token, tokenize};
+
+/// Why parsing stopped, from the error resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+{% for e in errors %}
+    /// {{ e.summary }}
+    {{ e.variant }},
+{% endfor %}
+}
+
+/// A parse failure at a byte offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseError {
+    pub kind: ErrorKind,
+    pub offset: usize,
+}
+
+/// The function registry: name, minimum arguments, maximum arguments
+/// (`None` for variadic).
+pub const FUNCTIONS: &[(&str, usize, Option<usize>)] = &[
+{% for fn in functions %}
+    ("{{ fn.name }}", {{ fn.min_args }}, {% if fn.max_args is none %}None{% else %}Some({{ fn.max_args }}){% endif %}),
+{% endfor %}
+];
+
+/// The binary operator for a token: operator, precedence, right associative.
+fn binary_operator(token: &Token) -> Option<(BinaryOp, u8, bool)> {
+    match token {
+{% for op in binary %}
+        Token::{{ op.token_variant }} => Some((BinaryOp::{{ op.variant }}, {{ op.precedence }}, {{ op.right_associative | lower }})),
+{% endfor %}
+        _ => None,
+    }
+}
+
+fn unary_operator(token: &Token) -> Option<UnaryOp> {
+    match token {
+{% for op in unary %}
+        Token::{{ op.token_variant }} => Some(UnaryOp::{{ op.variant }}),
+{% endfor %}
+        _ => None,
+    }
+}
+
+impl From<LexError> for ParseError {
+    fn from(error: LexError) -> Self {
+        Self {
+            kind: match error.kind {
+                LexErrorKind::InvalidCharacter => ErrorKind::InvalidCharacter,
+                LexErrorKind::UnterminatedString => ErrorKind::UnterminatedString,
+            },
+            offset: error.offset,
+        }
+    }
+}
+
+struct Parser {
+    tokens: Vec<Spanned>,
+    position: usize,
+    end: usize,
+}
+
+/// Parse one formula.
+pub fn parse(source: &str) -> Result<Expr, ParseError> {
+    let tokens = tokenize(source)?;
+    let mut parser = Parser {
+        tokens,
+        position: 0,
+        end: source.len(),
+    };
+    match parser.peek() {
+        Some(Token::{{ lead_token_variant }}) => parser.position += 1,
+        _ => {
+            return Err(ParseError {
+                kind: ErrorKind::MissingLeadingEquals,
+                offset: 0,
+            });
+        }
+    }
+    let expr = parser.expression(0)?;
+    if let Some(spanned) = parser.tokens.get(parser.position) {
+        return Err(ParseError {
+            kind: ErrorKind::UnexpectedToken,
+            offset: spanned.offset,
+        });
+    }
+    Ok(expr)
+}
+
+impl Parser {
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.position).map(|spanned| &spanned.token)
+    }
+
+    fn offset(&self) -> usize {
+        self.tokens
+            .get(self.position)
+            .map_or(self.end, |spanned| spanned.offset)
+    }
+
+    fn error(&self, kind: ErrorKind) -> ParseError {
+        ParseError {
+            kind,
+            offset: self.offset(),
+        }
+    }
+
+    fn expression(&mut self, minimum: u8) -> Result<Expr, ParseError> {
+        let mut left = self.unary()?;
+        while let Some((op, precedence, right_associative)) = self.peek().and_then(binary_operator)
+        {
+            if precedence < minimum {
+                break;
+            }
+            self.position += 1;
+            let next_minimum = if right_associative {
+                precedence
+            } else {
+                precedence + 1
+            };
+            let right = self.expression(next_minimum)?;
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn unary(&mut self) -> Result<Expr, ParseError> {
+        if let Some(op) = self.peek().and_then(unary_operator) {
+            self.position += 1;
+            let operand = self.unary()?;
+            return Ok(Expr::Unary {
+                op,
+                operand: Box::new(operand),
+            });
+        }
+        self.primary()
+    }
+
+    fn primary(&mut self) -> Result<Expr, ParseError> {
+        let Some(spanned) = self.tokens.get(self.position).cloned() else {
+            return Err(self.error(ErrorKind::UnexpectedEnd));
+        };
+        self.position += 1;
+        match spanned.token {
+            Token::Number(text) => Ok(Expr::Number(text)),
+            Token::Str(text) => Ok(Expr::Str(text)),
+            Token::True => Ok(Expr::Bool(true)),
+            Token::False => Ok(Expr::Bool(false)),
+            Token::Cell(from) => {
+                if self.peek() == Some(&Token::Colon) {
+                    self.position += 1;
+                    match self.tokens.get(self.position).cloned() {
+                        Some(Spanned {
+                            token: Token::Cell(to),
+                            ..
+                        }) => {
+                            self.position += 1;
+                            Ok(Expr::Range(from, to))
+                        }
+                        Some(_) => Err(self.error(ErrorKind::UnexpectedToken)),
+                        None => Err(self.error(ErrorKind::UnexpectedEnd)),
+                    }
+                } else {
+                    Ok(Expr::Cell(from))
+                }
+            }
+            Token::Identifier(name) => self.call(&name, spanned.offset),
+            Token::LParen => {
+                let inner = self.expression(0)?;
+                match self.peek() {
+                    Some(Token::RParen) => {
+                        self.position += 1;
+                        Ok(inner)
+                    }
+                    Some(_) => Err(self.error(ErrorKind::UnexpectedToken)),
+                    None => Err(self.error(ErrorKind::UnexpectedEnd)),
+                }
+            }
+            _ => Err(ParseError {
+                kind: ErrorKind::UnexpectedToken,
+                offset: spanned.offset,
+            }),
+        }
+    }
+
+    fn call(&mut self, name: &str, offset: usize) -> Result<Expr, ParseError> {
+        if self.peek() != Some(&Token::LParen) {
+            return Err(ParseError {
+                kind: ErrorKind::UnexpectedToken,
+                offset,
+            });
+        }
+        self.position += 1;
+        let name = name.to_ascii_uppercase();
+        let Some((_, minimum, maximum)) = FUNCTIONS.iter().find(|(known, _, _)| *known == name)
+        else {
+            return Err(ParseError {
+                kind: ErrorKind::UnknownFunction,
+                offset,
+            });
+        };
+        let mut args = Vec::new();
+        if self.peek() == Some(&Token::RParen) {
+            self.position += 1;
+        } else {
+            loop {
+                args.push(self.expression(0)?);
+                match self.peek() {
+                    Some(Token::Comma) => self.position += 1,
+                    Some(Token::RParen) => {
+                        self.position += 1;
+                        break;
+                    }
+                    Some(_) => return Err(self.error(ErrorKind::UnexpectedToken)),
+                    None => return Err(self.error(ErrorKind::UnexpectedEnd)),
+                }
+            }
+        }
+        if args.len() < *minimum || maximum.is_some_and(|maximum| args.len() > maximum) {
+            return Err(ParseError {
+                kind: ErrorKind::WrongArgumentCount,
+                offset,
+            });
+        }
+        Ok(Expr::Call { name, args })
+    }
+}

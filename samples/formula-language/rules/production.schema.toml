@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["rule", "uses", "chapter"]
+
+[properties.rule]
+type = "string"
+minLength = 1
+
+[properties.start]
+type = "boolean"
+
+[properties.uses]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = ["example/formula-language/token@1", "example/formula-language/production@1"] }
+
+[properties.chapter]
+type = "string"
+"x-bearout" = { ref = "example/formula-language/chapter@1" }

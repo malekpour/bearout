@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+version = 1
+entry = "bearout.star"
+
+[resources]
+roots = ["spec"]
+
+[rules]
+root = "rules"
+
+[templates]
+root = "templates"
+
+[outputs]
+roots = ["formulo/src/generated", "formulo/tests", "generated"]
+license = "Apache-2.0"

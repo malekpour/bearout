@@ -1,0 +1,242 @@
+[
+  {
+    "expected_ast": null,
+    "expected_error": "error-wrong-argument-count",
+    "expected_error_variant": "WrongArgumentCount",
+    "id": "example-arity-high",
+    "inline": true,
+    "note": "`IF` accepts at most three arguments.",
+    "source": "=IF(1, 2, 3, 4)",
+    "test_name": "example_arity_high"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-wrong-argument-count",
+    "expected_error_variant": "WrongArgumentCount",
+    "id": "example-arity-low",
+    "inline": true,
+    "note": "`IF` needs at least two arguments.",
+    "source": "=IF(1)",
+    "test_name": "example_arity_low"
+  },
+  {
+    "expected_ast": "(binary subtract (binary subtract (number 8) (number 3)) (number 2))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-associativity",
+    "inline": false,
+    "note": "Subtraction is left associative.",
+    "source": "=8 - 3 - 2",
+    "test_name": "example_associativity"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-unexpected-token",
+    "expected_error_variant": "UnexpectedToken",
+    "id": "example-bare-identifier",
+    "inline": true,
+    "note": "A bare identifier is not an expression.",
+    "source": "=total",
+    "test_name": "example_bare_identifier"
+  },
+  {
+    "expected_ast": "(binary equal (bool true) (bool false))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-booleans",
+    "inline": true,
+    "note": "Keywords are case-insensitive; the second `=` is the comparison operator.",
+    "source": "=true = FALSE",
+    "test_name": "example_booleans"
+  },
+  {
+    "expected_ast": "(binary add (cell $A$1) (cell B2))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-cells",
+    "inline": true,
+    "note": "Column letters are normalized to upper case; `$` marks absolute parts.",
+    "source": "=$a$1 + b2",
+    "test_name": "example_cells"
+  },
+  {
+    "expected_ast": "(binary not-equal (binary less (number 1) (number 2)) (number 3))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-comparison-chain",
+    "inline": false,
+    "note": "Comparisons are left associative.",
+    "source": "=1 \u003c 2 \u003c\u003e 3",
+    "test_name": "example_comparison_chain"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-invalid-character",
+    "expected_error_variant": "InvalidCharacter",
+    "id": "example-decimal",
+    "inline": true,
+    "note": "A literal needs a leading digit. `.5` starts no token, so the lexer stops at `.` with an invalid character.",
+    "source": "=1.50 + .5",
+    "test_name": "example_decimal"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-missing-leading-equals",
+    "expected_error_variant": "MissingLeadingEquals",
+    "id": "example-empty",
+    "inline": true,
+    "note": "Empty input has no leading `=`.",
+    "source": "",
+    "test_name": "example_empty"
+  },
+  {
+    "expected_ast": "(binary multiply (binary add (number 1) (number 2)) (number 3))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-grouping",
+    "inline": false,
+    "note": "Parentheses override precedence.",
+    "source": "=(1 + 2) * 3",
+    "test_name": "example_grouping"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-invalid-character",
+    "expected_error_variant": "InvalidCharacter",
+    "id": "example-invalid-character",
+    "inline": true,
+    "note": "`#` starts no token.",
+    "source": "=1 # 2",
+    "test_name": "example_invalid_character"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-missing-leading-equals",
+    "expected_error_variant": "MissingLeadingEquals",
+    "id": "example-missing-equals",
+    "inline": true,
+    "note": "A formula must begin with `=`.",
+    "source": "1 + 2",
+    "test_name": "example_missing_equals"
+  },
+  {
+    "expected_ast": "(call IF (binary greater (cell A1) (number 0)) (call MAX (cell A1) (number 1)) (call MIN (cell A1) (unary negate (number 1))))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-nested-calls",
+    "inline": false,
+    "note": "Calls nest and take expressions as arguments.",
+    "source": "=IF(A1 \u003e 0, MAX(A1, 1), MIN(A1, -1))",
+    "test_name": "example_nested_calls"
+  },
+  {
+    "expected_ast": "(binary power (number 2) (binary power (number 3) (number 2)))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-power-right",
+    "inline": false,
+    "note": "Exponentiation is right associative.",
+    "source": "=2^3^2",
+    "test_name": "example_power_right"
+  },
+  {
+    "expected_ast": "(binary add (number 1) (binary multiply (number 2) (number 3)))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-precedence",
+    "inline": false,
+    "note": "Multiplication binds tighter than addition.",
+    "source": "=1 + 2 * 3",
+    "test_name": "example_precedence"
+  },
+  {
+    "expected_ast": "(call SUM (range A1 B3))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-range",
+    "inline": true,
+    "note": "A range argument.",
+    "source": "=SUM(A1:B3)",
+    "test_name": "example_range"
+  },
+  {
+    "expected_ast": "(string \"say \\\"hi\\\"\")",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-string-escape",
+    "inline": true,
+    "note": "Doubled quotes inside a string stand for one quote.",
+    "source": "=\"say \"\"hi\"\"\"",
+    "test_name": "example_string_escape"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-unexpected-token",
+    "expected_error_variant": "UnexpectedToken",
+    "id": "example-trailing",
+    "inline": true,
+    "note": "Input after a complete formula is an error.",
+    "source": "=1 2",
+    "test_name": "example_trailing"
+  },
+  {
+    "expected_ast": "(binary power (unary negate (number 2)) (number 2))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-unary-before-power",
+    "inline": false,
+    "note": "Unary minus binds tighter than exponentiation.",
+    "source": "=-2^2",
+    "test_name": "example_unary_before_power"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-unexpected-end",
+    "expected_error_variant": "UnexpectedEnd",
+    "id": "example-unclosed-group",
+    "inline": true,
+    "note": "The group never closes.",
+    "source": "=(1 + 2",
+    "test_name": "example_unclosed_group"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-unexpected-end",
+    "expected_error_variant": "UnexpectedEnd",
+    "id": "example-unexpected-end",
+    "inline": true,
+    "note": "The input ends inside an expression.",
+    "source": "=1 +",
+    "test_name": "example_unexpected_end"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-unknown-function",
+    "expected_error_variant": "UnknownFunction",
+    "id": "example-unknown-function",
+    "inline": true,
+    "note": "`AVG` is not in the registry.",
+    "source": "=AVG(1, 2)",
+    "test_name": "example_unknown_function"
+  },
+  {
+    "expected_ast": null,
+    "expected_error": "error-unterminated-string",
+    "expected_error_variant": "UnterminatedString",
+    "id": "example-unterminated",
+    "inline": true,
+    "note": "The string never closes.",
+    "source": "=\"abc",
+    "test_name": "example_unterminated"
+  },
+  {
+    "expected_ast": "(binary add (number 1) (number 2))",
+    "expected_error": null,
+    "expected_error_variant": null,
+    "id": "example-whitespace",
+    "inline": true,
+    "note": "Spaces and tabs between tokens are ignored, including at the end.",
+    "source": "=  1+\t2 ",
+    "test_name": "example_whitespace"
+  }
+]
