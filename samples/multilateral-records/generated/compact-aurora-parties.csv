@@ -1,0 +1,8 @@
+code,name,status,signed,instrument,deposited,consultative,consultative_since
+MR,"Republic of Meridia",signatory,2031-03-12,ratification,2031-09-01,True,2032-06-01
+OF,"Orvelune Federation",signatory,2031-03-12,ratification,2031-11-20,True,2032-06-01
+CI,"Corvane Islands",signatory,2031-03-12,ratification,2032-01-15,True,2032-06-01
+QC,"Quendra Commonwealth",signatory,2031-03-12,ratification,2032-04-03,True,2032-06-01
+IR,"Ilvaren Reach",signatory,2031-03-12,ratification,2032-06-01,True,2032-06-01
+SU,"Sarralind Union",acceding,,accession,2033-02-10,True,2034-05-01
+VY,"Veyra",acceding,,accession,2034-08-22,False,

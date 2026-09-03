@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# allOf/if/then binds the instrument to the status and requires the
+# consultative date when consultative status is claimed.
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["name", "code", "compact", "status", "deposited", "instrument", "consultative", "note"]
+
+[properties.name]
+type = "string"
+minLength = 1
+
+[properties.code]
+type = "string"
+pattern = "^[A-Z]{2}$"
+
+[properties.compact]
+type = "string"
+"x-bearout" = { ref = "example/multilateral-records/compact@1" }
+
+[properties.status]
+enum = ["signatory", "acceding"]
+
+[properties.signed]
+type = "string"
+format = "date"
+
+[properties.deposited]
+type = "string"
+format = "date"
+
+[properties.instrument]
+enum = ["ratification", "accession", "succession"]
+
+[properties.consultative]
+type = "boolean"
+
+[properties.consultative_since]
+type = "string"
+format = "date"
+
+[properties.note]
+type = "string"
+pattern = "^Fictional"
+
+[[allOf]]
+if = { properties = { status = { const = "signatory" } } }
+then = { required = ["signed"], properties = { instrument = { const = "ratification" } } }
+
+[[allOf]]
+if = { properties = { status = { const = "acceding" } } }
+then = { properties = { instrument = { enum = ["accession", "succession"] } } }
+
+[[allOf]]
+if = { properties = { consultative = { const = true } } }
+then = { required = ["consultative_since"] }

@@ -1,0 +1,4 @@
+code,name,status,signed,instrument,deposited,consultative,consultative_since
+{% for party in parties %}
+{{ party.code }},{{ party.name | quote }},{{ party.status }},{{ party.signed | default("") }},{{ party.instrument }},{{ party.deposited }},{{ party.consultative }},{{ party.consultative_since | default("") }}
+{% endfor %}

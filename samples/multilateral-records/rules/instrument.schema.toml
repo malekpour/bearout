@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "kind", "parent", "adopted", "place", "in_force"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.kind]
+enum = ["protocol", "annex", "measure"]
+
+[properties.parent]
+type = "string"
+"x-bearout" = { ref = "example/multilateral-records/compact@1" }
+
+[properties.adopted]
+type = "string"
+format = "date"
+
+[properties.place]
+type = "string"
+minLength = 1
+
+[properties.in_force]
+type = "string"
+format = "date"
+
+["x-bearout"]
+sections = ["Summary"]

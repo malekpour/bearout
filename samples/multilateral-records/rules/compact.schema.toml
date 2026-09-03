@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = [
+  "title",
+  "signed",
+  "place",
+  "in_force",
+  "depositary",
+  "languages",
+  "entry_into_force",
+  "original_signatories"
+]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.signed]
+type = "string"
+format = "date"
+
+[properties.place]
+type = "string"
+minLength = 1
+
+[properties.in_force]
+type = "string"
+format = "date"
+
+[properties.depositary]
+type = "string"
+minLength = 1
+
+[properties.languages]
+type = "array"
+minItems = 1
+uniqueItems = true
+items = { type = "string", minLength = 1 }
+
+[properties.entry_into_force]
+enum = ["all-signatories"]
+
+[properties.original_signatories]
+type = "integer"
+minimum = 2
+
+["x-bearout"]
+sections = ["Summary"]

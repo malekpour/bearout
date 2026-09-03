@@ -1,0 +1,26 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# {{ compact.title }}
+
+Fictional instrument among fictional polities. Signed at {{ compact.place }}
+on {{ compact.signed }} by {{ compact.original_signatories }} parties; in
+force since {{ compact.in_force }}. Depositary: {{ compact.depositary }}.
+Authentic texts: {{ compact.languages | join(", ") }}.
+
+{{ summary }}
+
+## Articles
+
+{% for article in articles %}
+{{ article.number }}. **{{ article.title }}.** {{ article.summary }}
+{% endfor %}
+
+## Related instruments
+
+| Instrument | Kind | Adopted | In force |
+| --- | --- | --- | --- |
+{% for instrument in instruments %}
+| {{ instrument.title }} | {{ instrument.kind }} | {{ instrument.adopted }}, {{ instrument.place }} | {{ instrument.in_force }} |
+{% endfor %}

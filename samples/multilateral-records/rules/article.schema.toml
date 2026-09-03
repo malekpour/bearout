@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["compact", "number", "title", "topics"]
+
+[properties.compact]
+type = "string"
+"x-bearout" = { ref = "example/multilateral-records/compact@1" }
+
+[properties.number]
+type = "integer"
+minimum = 1
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.topics]
+type = "array"
+minItems = 1
+uniqueItems = true
+items = { enum = [
+  "purpose",
+  "science",
+  "data",
+  "access",
+  "governance",
+  "disputes",
+  "amendment",
+  "final-clauses"
+] }
+
+["x-bearout"]
+sections = ["Summary"]

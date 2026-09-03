@@ -1,0 +1,13 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Parties to the {{ compact.title }}
+
+Fictional. {{ parties | length }} parties on file, in order of deposit.
+
+| Party | Status | Signed | Instrument | Deposited | Consultative since |
+| --- | --- | --- | --- | --- | --- |
+{% for party in parties %}
+| {{ party.name }} | {{ party.status }} | {{ party.signed | default("") }} | {{ party.instrument }} | {{ party.deposited }} | {{ party.consultative_since | default("") }} |
+{% endfor %}
