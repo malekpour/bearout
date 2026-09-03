@@ -65,9 +65,17 @@ pull-request description.
 
 A release is a tag `vX.Y.Z` that matches the version in `Cargo.toml`. The
 Release workflow verifies that match, runs the full check, creates the
-GitHub release with generated notes, and attaches binaries for Linux
-x86-64, macOS arm64, and Windows x86-64 with SHA-256 checksums. Bump the
-version and the changelog in a commit, tag it, and push the tag.
+GitHub release with generated notes, attaches binaries for Linux x86-64,
+macOS arm64, and Windows x86-64 with SHA-256 checksums, and then publishes
+the crate to crates.io through trusted publishing, skipping versions that
+are already there. Bump the version and the changelog in a commit, tag it,
+and push the tag.
+
+Trusted publishing stores no token: crates.io trusts this repository's
+`release.yml` workflow directly. It is configured once on crates.io, under
+the crate's settings, by adding a GitHub trusted publisher with owner
+`malekpour`, repository `bearout`, and workflow `release.yml`; no
+environment name is required.
 
 ## Pre-publication follow-ups
 
@@ -76,6 +84,4 @@ Before the first release to crates.io:
 - add dependency licence and advisory automation (for example `cargo deny`)
   with its policy file, and run it in CI;
 - register a project homepage before restoring the `homepage` field in
-  `Cargo.toml`;
-- run the Windows and macOS CI jobs on the first pushed commit and fix
-  anything platform-specific they reveal.
+  `Cargo.toml`.
