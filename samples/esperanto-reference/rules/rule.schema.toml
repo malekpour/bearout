@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "number", "chapter", "source", "locator"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.number]
+type = "integer"
+minimum = 1
+maximum = 16
+
+[properties.chapter]
+type = "string"
+"x-bearout" = { ref = "example/esperanto-reference/chapter@1" }
+
+[properties.source]
+type = "string"
+"x-bearout" = { ref = "example/esperanto-reference/source@1" }
+
+[properties.locator]
+type = "string"
+minLength = 1
+
+["x-bearout"]
+sections = ["Regulo", "Rule"]

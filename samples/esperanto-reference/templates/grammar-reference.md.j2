@@ -1,0 +1,32 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Esperanta gramatika referenco / Esperanto grammar reference
+
+A small reference paraphrased from the Fundamento de Esperanto as published
+by the Akademio de Esperanto. Each rule names its source and locator.
+
+{% for chapter in chapters %}
+## {{ chapter.sequence }}. {{ chapter.title }}
+
+{{ chapter.celo }}
+
+{{ chapter.purpose }}
+
+{% for rule in chapter.rules %}
+### Regulo {{ rule.number }}: {{ rule.title }}
+
+{{ rule.regulo }}
+
+{{ rule.rule }}
+
+Source: [{{ rule.source }}]({{ rule.url }}), {{ rule.locator }}.
+
+{% endfor %}
+{% endfor %}
+## Fontoj / Sources
+
+{% for source in sources %}
+- [{{ source.title }}]({{ source.url }}), {{ source.publisher }}, retrieved {{ source.retrieved }}.
+{% endfor %}

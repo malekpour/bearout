@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["esperanto", "english", "part_of_speech", "morphemes", "attested_in"]
+
+[properties.esperanto]
+type = "string"
+minLength = 1
+
+[properties.english]
+type = "string"
+minLength = 1
+
+[properties.part_of_speech]
+enum = ["noun", "adjective", "verb", "adverb"]
+
+[properties.morphemes]
+type = "array"
+minItems = 1
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/esperanto-reference/morpheme@1" }
+
+[properties.attested_in]
+type = "array"
+minItems = 1
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/esperanto-reference/example@1" }

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "publisher", "url", "retrieved"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.publisher]
+type = "string"
+minLength = 1
+
+[properties.url]
+type = "string"
+pattern = "^https://"
+
+[properties.retrieved]
+type = "string"
+format = "date"
+
+["x-bearout"]
+sections = ["Summary"]

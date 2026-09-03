@@ -1,0 +1,13 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Morfemindekso / Morpheme index
+
+Sorted in Esperanto alphabetical order, as defined by `rules/lib/eo.star`.
+
+| Formo | Kind | Meaning | Rule | Terms |
+| --- | --- | --- | --- | --- |
+{% for m in morphemes %}
+| `{{ m.form }}` | {{ m.kind }} | {{ m.meaning }} | {{ m.rule }} | {{ m.terms | join(", ") }} |
+{% endfor %}

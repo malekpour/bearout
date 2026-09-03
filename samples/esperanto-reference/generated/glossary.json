@@ -1,0 +1,217 @@
+[
+  {
+    "attested_in": [
+      "example-sxi-devis"
+    ],
+    "english": "water",
+    "esperanto": "akvo",
+    "id": "term-akvo",
+    "morphemes": [
+      "morpheme-o",
+      "morpheme-n"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-la-birdoj-flugas"
+    ],
+    "english": "bird",
+    "esperanto": "birdo",
+    "id": "term-birdo",
+    "morphemes": [
+      "morpheme-o",
+      "morpheme-j"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-la-cxielo-estas-blua"
+    ],
+    "english": "blue",
+    "esperanto": "blua",
+    "id": "term-blua",
+    "morphemes": [
+      "morpheme-a"
+    ],
+    "part_of_speech": "adjective"
+  },
+  {
+    "attested_in": [
+      "example-bonaj-infanoj"
+    ],
+    "english": "good",
+    "esperanto": "bona",
+    "id": "term-bona",
+    "morphemes": [
+      "morpheme-a",
+      "morpheme-j"
+    ],
+    "part_of_speech": "adjective"
+  },
+  {
+    "attested_in": [
+      "example-la-suno-brilas"
+    ],
+    "english": "to shine",
+    "esperanto": "brili",
+    "id": "term-brili",
+    "morphemes": [
+      "morpheme-i",
+      "morpheme-as"
+    ],
+    "part_of_speech": "verb"
+  },
+  {
+    "attested_in": [
+      "example-la-cxielo-estas-blua"
+    ],
+    "english": "sky",
+    "esperanto": "ĉielo",
+    "id": "term-cxielo",
+    "morphemes": [
+      "morpheme-o"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-bonaj-infanoj"
+    ],
+    "english": "diligently",
+    "esperanto": "diligente",
+    "id": "term-diligente",
+    "morphemes": [
+      "morpheme-e"
+    ],
+    "part_of_speech": "adverb"
+  },
+  {
+    "attested_in": [
+      "example-dolcxan-pomon"
+    ],
+    "english": "sweet",
+    "esperanto": "dolĉa",
+    "id": "term-dolcxa",
+    "morphemes": [
+      "morpheme-a",
+      "morpheme-n"
+    ],
+    "part_of_speech": "adjective"
+  },
+  {
+    "attested_in": [
+      "example-dolcxan-pomon"
+    ],
+    "english": "to give",
+    "esperanto": "doni",
+    "id": "term-doni",
+    "morphemes": [
+      "morpheme-i",
+      "morpheme-is"
+    ],
+    "part_of_speech": "verb"
+  },
+  {
+    "attested_in": [
+      "example-patro-kaj-frato"
+    ],
+    "english": "brother",
+    "esperanto": "frato",
+    "id": "term-frato",
+    "morphemes": [
+      "morpheme-o"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-bonaj-infanoj"
+    ],
+    "english": "child",
+    "esperanto": "infano",
+    "id": "term-infano",
+    "morphemes": [
+      "morpheme-o",
+      "morpheme-j"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-mi-vidas-leonon"
+    ],
+    "english": "lion",
+    "esperanto": "leono",
+    "id": "term-leono",
+    "morphemes": [
+      "morpheme-o",
+      "morpheme-n"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-patro-kaj-frato",
+      "example-dolcxan-pomon"
+    ],
+    "english": "father",
+    "esperanto": "patro",
+    "id": "term-patro",
+    "morphemes": [
+      "morpheme-o"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-dolcxan-pomon"
+    ],
+    "english": "apple",
+    "esperanto": "pomo",
+    "id": "term-pomo",
+    "morphemes": [
+      "morpheme-o",
+      "morpheme-n"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-la-suno-brilas"
+    ],
+    "english": "sun",
+    "esperanto": "suno",
+    "id": "term-suno",
+    "morphemes": [
+      "morpheme-o"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-sxi-devis"
+    ],
+    "english": "she",
+    "esperanto": "ŝi",
+    "id": "term-sxi",
+    "morphemes": [
+      "morpheme-o"
+    ],
+    "part_of_speech": "noun"
+  },
+  {
+    "attested_in": [
+      "example-mi-vidas-leonon"
+    ],
+    "english": "to see",
+    "esperanto": "vidi",
+    "id": "term-vidi",
+    "morphemes": [
+      "morpheme-i",
+      "morpheme-as"
+    ],
+    "part_of_speech": "verb"
+  }
+]

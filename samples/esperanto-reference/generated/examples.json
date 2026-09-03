@@ -1,0 +1,111 @@
+[
+  {
+    "english": "Good children learn diligently.",
+    "esperanto": "Bonaj infanoj lernas diligente.",
+    "id": "example-bonaj-infanoj",
+    "locator": "§ 9",
+    "rules": [
+      "rule-03-adjektivo",
+      "rule-07-adverbo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "The father gave me a sweet apple.",
+    "esperanto": "La patro donis al mi dolĉan pomon.",
+    "id": "example-dolcxan-pomon",
+    "locator": "§ 10",
+    "rules": [
+      "rule-02-substantivo",
+      "rule-03-adjektivo",
+      "rule-06-verbo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "The birds fly.",
+    "esperanto": "La birdoj flugas.",
+    "id": "example-la-birdoj-flugas",
+    "locator": "§ 9",
+    "rules": [
+      "rule-02-substantivo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "The sky is blue.",
+    "esperanto": "La ĉielo estas blua.",
+    "id": "example-la-cxielo-estas-blua",
+    "locator": "§ 6",
+    "rules": [
+      "rule-03-adjektivo",
+      "rule-09-prononco"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "The child is not a mature person.",
+    "esperanto": "La infano ne estas matura homo.",
+    "id": "example-la-infano-ne-estas",
+    "locator": "§ 6",
+    "rules": [
+      "rule-12-neado",
+      "rule-01-artikolo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "The sun shines.",
+    "esperanto": "La suno brilas.",
+    "id": "example-la-suno-brilas",
+    "locator": "§ 5",
+    "rules": [
+      "rule-01-artikolo",
+      "rule-06-verbo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "A textbook one must not read through, but learn through.",
+    "esperanto": "Lernolibron oni devas ne tralegi, sed tralerni.",
+    "id": "example-lernolibron",
+    "locator": "§ 27",
+    "rules": [
+      "rule-11-kunmetado",
+      "rule-12-neado"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "I see a lion.",
+    "esperanto": "Mi vidas leonon.",
+    "id": "example-mi-vidas-leonon",
+    "locator": "§ 7",
+    "rules": [
+      "rule-02-substantivo",
+      "rule-06-verbo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "Father and brother.",
+    "esperanto": "Patro kaj frato.",
+    "id": "example-patro-kaj-frato",
+    "locator": "§ 5",
+    "rules": [
+      "rule-02-substantivo"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  },
+  {
+    "english": "She had to go and draw water twice every day.",
+    "esperanto": "Ŝi devis du fojojn en ĉiu tago iri ĉerpi akvon.",
+    "id": "example-sxi-devis",
+    "locator": "§ 13",
+    "rules": [
+      "rule-06-verbo",
+      "rule-10-akcento"
+    ],
+    "source": "source-fundamento-ekzercaro"
+  }
+]

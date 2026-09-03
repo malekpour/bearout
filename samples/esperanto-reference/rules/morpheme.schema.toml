@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["form", "kind", "meaning", "rule"]
+
+[properties.form]
+type = "string"
+minLength = 1
+
+[properties.kind]
+enum = ["ending", "prefix", "suffix"]
+
+[properties.meaning]
+type = "string"
+minLength = 1
+
+[properties.rule]
+type = "string"
+"x-bearout" = { ref = "example/esperanto-reference/rule@1" }

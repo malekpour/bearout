@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "sequence"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.sequence]
+type = "integer"
+minimum = 1
+
+["x-bearout"]
+sections = ["Celo", "Purpose"]
