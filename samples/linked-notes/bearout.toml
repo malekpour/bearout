@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Static bootstrap: the capability boundary for this project.
+
+version = 1
+entry = "bearout.star"
+
+[resources]
+roots = ["content"]
+
+[rules]
+root = "rules"

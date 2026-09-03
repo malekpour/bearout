@@ -1,0 +1,3 @@
+schema = "example/linked-notes/tag@1"
+id = "tag-start-here"
+label = "Start here"

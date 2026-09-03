@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+# Shape of a note's front matter: JSON Schema 2020-12 authored in TOML.
+# The envelope keys `schema`, `id`, and `refs` are owned by Bearout and are
+# not declared here.
+
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.next]
+type = "string"
+"x-bearout" = { ref = "example/linked-notes/note@1" }
+
+[properties.tags]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/linked-notes/tag@1" }
+
+["x-bearout"]
+sections = ["Summary"]
