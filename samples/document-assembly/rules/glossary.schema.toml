@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+["x-bearout".fragments.term]
+type = "object"
+additionalProperties = false
+required = ["id", "term", "text"]
+
+["x-bearout".fragments.term.properties]
+id = { type = "string", pattern = "^glossary-[a-z0-9-]+-term-[a-z0-9-]+$" }
+term = { type = "string", minLength = 1 }
+text = { type = "string", minLength = 1 }

@@ -1,0 +1,24 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# {{ handbook.title }}
+
+Status: {{ handbook.status }}. Fictional handbook for the fictional
+{{ handbook.project_name }} project.
+
+## Introduction
+
+{{ introduction }}
+
+{% for section in sections %}
+## {{ section.number }}. {{ section.title }}
+
+{{ section.text }}
+
+{% endfor %}
+## Glossary
+
+{% for term in terms %}
+- **{{ term.term }}**: {{ term.text }}
+{% endfor %}

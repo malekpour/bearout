@@ -1,0 +1,27 @@
+[
+  {
+    "id": "glossary-core-term-review",
+    "term": "review",
+    "text": "the reading of a change by someone other than its author before it merges."
+  },
+  {
+    "id": "glossary-core-term-maintainer",
+    "term": "maintainer",
+    "text": "a contributor with the standing to approve changes and cut releases."
+  },
+  {
+    "id": "glossary-core-term-release",
+    "term": "release",
+    "text": "a tagged, reproducible snapshot of the project that others may depend on."
+  },
+  {
+    "id": "glossary-core-term-disclosure",
+    "term": "disclosure",
+    "text": "the private reporting of a security problem before it is made public."
+  },
+  {
+    "id": "glossary-core-term-changelog",
+    "term": "changelog",
+    "text": "the list of user-visible changes kept per release."
+  }
+]

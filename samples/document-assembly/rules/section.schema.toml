@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "category", "version", "status"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.category]
+enum = ["conduct", "review", "release", "security", "general"]
+
+[properties.version]
+type = "integer"
+minimum = 1
+
+[properties.status]
+enum = ["draft", "approved", "retired"]
+
+[properties.supersedes]
+type = "string"
+"x-bearout" = { ref = "example/document-assembly/section@1" }
+
+[properties.uses_terms]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/document-assembly/glossary@1#term" }
+
+["x-bearout"]
+sections = ["Text"]

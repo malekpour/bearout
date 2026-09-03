@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = [
+  "title",
+  "project_name",
+  "team_name",
+  "status",
+  "glossary",
+  "sections",
+  "required_categories"
+]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.project_name]
+type = "string"
+minLength = 1
+
+[properties.team_name]
+type = "string"
+minLength = 1
+
+[properties.status]
+enum = ["draft", "published"]
+
+[properties.glossary]
+type = "string"
+"x-bearout" = { ref = "example/document-assembly/glossary@1" }
+
+[properties.sections]
+type = "array"
+minItems = 1
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/document-assembly/section@1" }
+
+[properties.required_categories]
+type = "array"
+uniqueItems = true
+items = { enum = ["conduct", "review", "release", "security", "general"] }
+
+["x-bearout"]
+sections = ["Introduction"]
