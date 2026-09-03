@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[files]
+exclude = ["mise.lock"]
+
+[format.rules]
+indent-width = 2
+line-width = 100
+
+[[schemas]]
+path = "https://mise.jdx.dev/schema/mise.json"
+include = ["mise.toml"]
+strict = false

@@ -1,0 +1,25 @@
+# Rust build output
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Tool caches
+/.rumdl_cache/
+
+# Local environment and editor state
+.env
+.env.*
+.direnv/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Per-machine mise overrides
+mise.local.toml
+.mise.local.toml
+mise.*.local.toml

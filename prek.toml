@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# One repository check entry point prevents hooks from running tools twice.
+# The commit-msg hook enforces the Conventional Commits header and the DCO
+# sign-off that CONTRIBUTING.md asks for.
+
+default_install_hook_types = ["pre-commit", "commit-msg"]
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "check"
+name = "Bearout repository checks"
+language = "system"
+entry = "mise run check"
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "commit-message"
+name = "Conventional Commits header and DCO sign-off"
+language = "system"
+entry = "sh tools/check-commit-message.sh"
+stages = ["commit-msg"]

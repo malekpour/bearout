@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+# Bearout compares generated outputs and their digests byte for byte, so
+# every checkout must use LF regardless of the platform's default.
+* text=auto eol=lf
