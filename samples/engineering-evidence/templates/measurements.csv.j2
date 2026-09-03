@@ -1,0 +1,4 @@
+id,quantity,value,unit,method,source,source_kind
+{% for m in measurements %}
+{{ m.id }},{{ m.quantity | quote }},{{ m.value }},{{ m.unit }},{{ m.method | quote }},{{ m.source }},{{ m.source_kind }}
+{% endfor %}

@@ -1,0 +1,14 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Question register
+
+Every record in this register is synthetic. Nothing here describes a real
+device.
+
+| Question | Area | Status | Blocked by | Closed by |
+| --- | --- | --- | --- | --- |
+{% for q in questions %}
+| [{{ q.id }}](../{{ q.path }}) | {{ q.area }} | {{ q.status }} | {{ q.blocked_by | join(", ") }} | {{ q.closed_by }} |
+{% endfor %}

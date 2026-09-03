@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# A decision states its basis. When the basis is measurement, evidence is
+# mandatory; JSON Schema if/then says so without a script.
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "status", "basis", "date"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.status]
+enum = ["proposed", "accepted", "rejected"]
+
+[properties.basis]
+enum = ["analysis", "measurement"]
+
+[properties.date]
+type = "string"
+format = "date"
+
+[properties.closes]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/engineering-evidence/question@1" }
+
+[properties.evidence]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/engineering-evidence/measurement@1" }
+
+[if.properties.basis]
+const = "measurement"
+
+[then]
+required = ["evidence"]
+
+[then.properties.evidence]
+minItems = 1
+
+["x-bearout"]
+sections = ["Context"]
+
+["x-bearout".fragments.ruling]
+type = "object"
+additionalProperties = false
+required = ["id", "text"]
+
+["x-bearout".fragments.ruling.properties]
+id = { type = "string", pattern = "^decision-[0-9]{4}-ruling-[0-9]{2}$" }
+text = { type = "string", minLength = 1 }

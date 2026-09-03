@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "area", "status"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.area]
+enum = ["electrical", "timing", "protocol", "mechanical", "security"]
+
+[properties.status]
+enum = ["open", "blocked", "closed"]
+
+[properties.blocked_by]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/engineering-evidence/question@1" }
+
+[properties.closed_by]
+type = "string"
+"x-bearout" = { ref = "example/engineering-evidence/decision@1" }

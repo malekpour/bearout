@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# A measurement record. `fixture` must be true and the note must say the
+# value is synthetic: this sample never presents a real device measurement.
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["quantity", "value", "unit", "method", "source", "fixture", "note"]
+
+[properties.quantity]
+type = "string"
+minLength = 1
+
+[properties.value]
+type = "number"
+
+[properties.unit]
+enum = ["V", "mA", "ms", "us", "MHz", "count", "mm"]
+
+[properties.method]
+type = "string"
+minLength = 1
+
+[properties.source]
+type = "string"
+"x-bearout" = { ref = "example/engineering-evidence/source@1" }
+
+[properties.fixture]
+const = true
+
+[properties.note]
+type = "string"
+pattern = "^Synthetic fixture value"

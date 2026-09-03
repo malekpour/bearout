@@ -1,0 +1,5 @@
+id,quantity,value,unit,method,source,source_kind
+measurement-channel-count,"Digital input channel count",8,count,"fixture table lookup",source-fixture-bench,synthetic-fixture
+measurement-cycle-period,"Cyclic frame period",1,ms,"fixture table lookup",source-fixture-bench,synthetic-fixture
+measurement-input-hysteresis,"Digital input hysteresis",0.3,V,"fixture table lookup",source-fixture-bench,synthetic-fixture
+measurement-input-threshold,"Digital input switching threshold",2.4,V,"fixture table lookup",source-fixture-bench,synthetic-fixture

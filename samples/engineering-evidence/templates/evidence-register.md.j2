@@ -1,0 +1,24 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Evidence register
+
+Every measurement below is a synthetic fixture value recorded for engine
+development. None is a measurement of a real device or a manufacturer claim.
+
+## Measurements
+
+| Measurement | Quantity | Value | Unit | Method | Source | Used by |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for m in measurements %}
+| [{{ m.id }}](../{{ m.path }}) | {{ m.quantity }} | {{ m.value }} | {{ m.unit }} | {{ m.method }} | {{ m.source }} ({{ m.source_kind }}) | {{ m.used_by | join(", ") }} |
+{% endfor %}
+
+## Decisions and their basis
+
+| Decision | Status | Basis | Evidence | Closes |
+| --- | --- | --- | --- | --- |
+{% for d in decisions %}
+| [{{ d.id }}](../{{ d.path }}) | {{ d.status }} | {{ d.basis }} | {{ d.evidence | join(", ") }} | {{ d.closes | join(", ") }} |
+{% endfor %}

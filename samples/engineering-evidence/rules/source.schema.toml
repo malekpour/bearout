@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# An evidence source. Nothing in this sample is a real datasheet or bench
+# record; the kind enumeration says what each source is.
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "kind", "locator"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.kind]
+enum = ["analysis-note", "synthetic-fixture", "standard-reference"]
+
+[properties.locator]
+type = "string"
+minLength = 1
+
+["x-bearout"]
+sections = ["Summary"]

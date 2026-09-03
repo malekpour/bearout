@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "signals"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.signals]
+type = "array"
+minItems = 1
+
+[properties.signals.items]
+type = "object"
+additionalProperties = false
+required = ["name", "direction", "width"]
+
+[properties.signals.items.properties]
+name = { type = "string", minLength = 1 }
+direction = { enum = ["in", "out", "inout"] }
+width = { type = "integer", minimum = 1 }
