@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+# Shape of a decision record. Field types, enumerations, the date format,
+# unknown fields, typed relations, the required Context section, and the
+# ruling fragment shape are all declared here and enforced by the kernel.
+
+"$schema" = "https://json-schema.org/draft/2020-12/schema"
+type = "object"
+additionalProperties = false
+required = ["title", "status", "date"]
+
+[properties.title]
+type = "string"
+minLength = 1
+
+[properties.status]
+enum = ["proposed", "accepted", "rejected", "superseded"]
+
+[properties.date]
+type = "string"
+format = "date"
+
+[properties.supersedes]
+type = "array"
+uniqueItems = true
+items = { type = "string" }
+"x-bearout" = { ref = "example/decision-records/decision@1" }
+
+[properties.superseded_by]
+type = "string"
+"x-bearout" = { ref = "example/decision-records/decision@1" }
+
+["x-bearout"]
+sections = ["Context"]
+
+["x-bearout".fragments.ruling]
+type = "object"
+additionalProperties = false
+required = ["id", "text"]
+
+["x-bearout".fragments.ruling.properties]
+id = { type = "string", pattern = "^decision-[0-9]{4}-ruling-[0-9]{2}$" }
+text = { type = "string", minLength = 1 }

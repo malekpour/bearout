@@ -1,0 +1,19 @@
+{% for line in bearout.header %}
+<!-- {{ line }} -->
+{% endfor %}
+
+# Decision index
+
+| Record | Title | Status | Date | Rulings |
+| --- | --- | --- | --- | --- |
+{% for record in records %}
+| [{{ record.id }}](../{{ record.path }}) | {{ record.title }} | {{ record.status }} | {{ record.date }} | {{ record.rulings | length }} |
+{% endfor %}
+
+## Rulings
+
+{% for record in records %}
+{% for ruling in record.rulings %}
+- [{{ ruling.id }}](../{{ record.path }}#{{ ruling.id }}): {{ ruling.text }}
+{% endfor %}
+{% endfor %}
