@@ -35,10 +35,26 @@ jobs:
 
       - run: mise run check
 
-      - name: Create the release if it does not exist
+      - name: Take the release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { inside = ($2 == v) ; next }
+            inside { print }
+          ' CHANGELOG.md | sed -e '1{/^$/d}' > release-notes.md
+          test -s release-notes.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
+          printf '\nFull changelog: https://github.com/%s/blob/%s/CHANGELOG.md\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> release-notes.md
+          cat release-notes.md
+
+      - name: Create or refresh the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Bearout ${GITHUB_REF_NAME#v}" --notes-file release-notes.md
+          fi
 
   assets:
     name: Build ${{ matrix.target }}

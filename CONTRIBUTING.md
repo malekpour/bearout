@@ -65,7 +65,8 @@ pull-request description.
 
 A release is a tag `vX.Y.Z` that matches the version in `Cargo.toml`. The
 Release workflow verifies that match, runs the full check, creates the
-GitHub release with generated notes, attaches binaries for Linux x86-64,
+GitHub release with the changelog section for that version as its notes,
+attaches binaries for Linux x86-64,
 macOS arm64, and Windows x86-64 with SHA-256 checksums, and then publishes
 the crate to crates.io through trusted publishing, skipping versions that
 are already there. Bump the version and the changelog in a commit, tag it,
