@@ -1,0 +1,7 @@
+schema = "example/fixture/doc@1"
+id = "doc-dates"
+date = 2026-01-02
+time = 10:00:00
+local = 2026-01-02T10:00:00
+zulu = 2026-01-02T10:00:00Z
+offset = 2026-01-02T10:00:00+02:00
