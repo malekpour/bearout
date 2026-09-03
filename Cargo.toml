@@ -1,0 +1,62 @@
+[package]
+name = "bearout"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "A programmable contract engine for linked resources, documentation, and code"
+readme = "README.md"
+repository = "https://github.com/malekpour/bearout"
+license = "Apache-2.0"
+keywords = ["cli", "codegen", "contracts", "documentation", "validation"]
+categories = ["command-line-utilities", "development-tools"]
+# The crates.io tarball carries the engine and its user documentation only.
+# Samples, tests, fixtures, CI, tool pins, and agent instructions stay in the
+# Git repository as executable documentation and integration coverage.
+include = [
+  "/CHANGELOG.md",
+  "/CONTRIBUTING.md",
+  "/Cargo.lock",
+  "/Cargo.toml",
+  "/LICENSE",
+  "/NOTICE.md",
+  "/README.md",
+  "/SECURITY.md",
+  "/docs/**",
+  "/src/**",
+]
+publish = false
+
+[dependencies]
+allocative = "0.3.6"
+anyhow = "1.0.104"
+blake3 = "1.8.2"
+cap-std = "4.0.3"
+cap-tempfile = "4.0.3"
+clap = { version = "4.6.6", features = ["derive"] }
+comrak = { version = "0.54.0", default-features = false }
+jsonschema = { version = "0.53.0", default-features = false }
+minijinja = { version = "2.24.0", features = ["fuel", "json", "loader"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+spdx = "0.13.5"
+starlark = "0.14.2"
+toml_edit = "0.25.13"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+# Pedantic lints that only demand documentation ceremony or forbid
+# common, readable patterns. Everything else in the group stays on.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+pedantic = { level = "warn", priority = -1 }
+result_unit_err = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+
+[lints.rust]
+unsafe_code = "deny"
