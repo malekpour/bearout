@@ -24,7 +24,7 @@ include = [
   "/docs/**",
   "/src/**",
 ]
-publish = false
+publish = ["crates-io"]
 
 [dependencies]
 allocative = "0.3.6"

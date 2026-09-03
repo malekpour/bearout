@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds release binaries for a version tag and attaches them, with SHA-256
+# checksums, to the GitHub release for that tag. The tag must match the
+# version in Cargo.toml, and the full repository check must pass first.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
+jobs:
+  verify:
+    name: Verify tag and repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.9.1
+          install_args: rust rumdl tombi prek
+
+      - name: Require the tag to match Cargo.toml
+        run: |
+          version=$(mise exec -- cargo pkgid | sed 's/.*#//')
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match crate version $version" >&2; exit 1; }
+
+      - run: mise run check
+
+      - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+
+  assets:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.9.1
+          install_args: rust
+
+      - run: mise exec -- cargo build --release --locked
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          name="bearout-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir dist "$name"
+          cp target/release/bearout LICENSE NOTICE.md README.md "$name"/
+          tar -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "bearout-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory dist, $name | Out-Null
+          Copy-Item target/release/bearout.exe, LICENSE, NOTICE.md, README.md $name/
+          Compress-Archive -Path $name -DestinationPath "dist/$name.zip"
+          "$((Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower())  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+
+      - name: Upload assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
