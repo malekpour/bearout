@@ -727,3 +727,310 @@ fn generate_check_and_write_include_formatter_verification() {
         "generation never rewrites sources"
     );
 }
+
+// ---- formatting writes ----------------------------------------------------
+
+fn format_options() -> Options {
+    Options {
+        allow_formatters: true,
+        ..Options::default()
+    }
+}
+
+/// Every file under the project with its bytes.
+fn snapshot(project: &Project) -> Vec<(String, Vec<u8>)> {
+    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("dir")
+            .filter_map(Result::ok)
+            .collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else {
+                let name = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((name, std::fs::read(&path).expect("read")));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(project.path(), project.path(), &mut out);
+    out
+}
+
+fn leftovers(project: &Project, dir: &str) -> Vec<String> {
+    std::fs::read_dir(project.path().join(dir))
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains("tmp") || name.starts_with(".bearout"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A project whose `text/` files need native fixes and whose `src/*.txt`
+/// files need the uppercasing fixture.
+fn writable_project() -> Project {
+    let project = Project::with_note();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"text\", \"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{}\", \"upper\"]\npaths = [\"src\"]\nextensions = [\"txt\"]\n",
+            common::BOOTSTRAP,
+            fixture_formatter()
+        ),
+    );
+    project.file(".editorconfig", STRICT);
+    project.file("text/messy.txt", "a  \r\nb\t\r\n\r\n\r\n");
+    project.file("text/clean.txt", "fine\n");
+    project.file("text/hard.md", "line  \nnext\n");
+    project.file("src/lower.txt", "lower\n");
+    project.file("src/lower.rs", "not assigned  \n");
+    project.file("outside.txt", "not selected  \n");
+    project
+}
+
+#[test]
+fn check_writes_nothing_and_format_rewrites_only_selected_files() {
+    let project = writable_project();
+    let before = snapshot(&project);
+    let report = project.run(Command::Check, &format_options());
+    assert_eq!(report.errors(), 5, "{:?}", lines(&report));
+    assert_eq!(snapshot(&project), before, "check mode never writes");
+
+    let report = project.run(Command::Format, &format_options());
+    assert_clean(&report);
+    assert_eq!(
+        report.formatted,
+        ["src/lower.rs", "src/lower.txt", "text/messy.txt"]
+    );
+    assert_eq!(project.read("text/messy.txt"), "a\nb\n");
+    assert_eq!(project.read("src/lower.txt"), "LOWER\n");
+    assert_eq!(
+        project.read("src/lower.rs"),
+        "not assigned\n",
+        "native rules still apply without a formatter"
+    );
+    assert_eq!(
+        project.read("text/hard.md"),
+        "line  \nnext\n",
+        "hard breaks kept where trimming is off"
+    );
+    assert_eq!(
+        project.read("outside.txt"),
+        "not selected  \n",
+        "unselected files are untouched"
+    );
+    assert_eq!(project.read("text/clean.txt"), "fine\n");
+    assert!(leftovers(&project, "text").is_empty() && leftovers(&project, "src").is_empty());
+
+    // A second run changes nothing, and the check is clean.
+    let again = project.run(Command::Format, &format_options());
+    assert_clean(&again);
+    assert!(again.formatted.is_empty());
+    assert_clean(&project.run(Command::Check, &format_options()));
+    let json = serde_json::to_value(&report).expect("json");
+    assert_eq!(json["formatted"][2], "text/messy.txt");
+}
+
+#[test]
+fn native_normalization_precedes_the_formatter() {
+    let project = writable_project();
+    // The fixture uppercases whatever it receives: trailing whitespace and
+    // CRLF are gone before it runs, so the result satisfies both.
+    project.file("src/lower.txt", "lower  \r\nmore\r\n\r\n");
+    assert_clean(&project.run(Command::Format, &format_options()));
+    assert_eq!(project.read("src/lower.txt"), "LOWER\nMORE\n");
+}
+
+#[test]
+fn git_backed_sources_and_baselines_cannot_be_formatted() {
+    let project = writable_project();
+    project.git_init();
+    project.commit_all("base");
+    let before = snapshot(&project);
+    for source in [Source::Index, Source::Revision("HEAD".to_owned())] {
+        let report = project.run(
+            Command::Format,
+            &Options {
+                source,
+                allow_formatters: true,
+                ..Options::default()
+            },
+        );
+        assert_fatal(&report, "formatting writes to the working directory");
+    }
+    let report = project.run(
+        Command::Format,
+        &Options {
+            baseline: Some("HEAD".to_owned()),
+            allow_formatters: true,
+            ..Options::default()
+        },
+    );
+    assert_fatal(&report, "formatting never touches a comparison baseline");
+    assert_eq!(snapshot(&project), before);
+    assert_fatal(
+        &project.run(Command::Format, &Options::default()),
+        "pass --allow-formatters",
+    );
+    assert_eq!(snapshot(&project), before);
+}
+
+#[test]
+fn files_that_cannot_be_formatted_are_reported_and_left_alone() {
+    let project = writable_project();
+    project.bytes("text/latin1.txt", b"caf\xe9  \n");
+    project.bytes("text/blob.txt", b"\x00\x01  \n");
+    let report = project.run(Command::Format, &format_options());
+    assert_eq!(
+        lines(&report),
+        [
+            "text/latin1.txt:B025: file is not valid UTF-8 and cannot be formatted: invalid utf-8 sequence of 1 bytes from index 3"
+        ]
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("text/latin1.txt")).unwrap(),
+        b"caf\xe9  \n"
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("text/blob.txt")).unwrap(),
+        b"\x00\x01  \n",
+        "binary files are never rewritten"
+    );
+    assert_eq!(
+        report.formatted,
+        ["src/lower.rs", "src/lower.txt", "text/messy.txt"],
+        "other files are still formatted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symbolic_links_are_refused_and_permissions_are_preserved() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = writable_project();
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::write(outside.path().join("victim.txt"), "victim  \n").expect("write");
+    std::os::unix::fs::symlink(
+        outside.path().join("victim.txt"),
+        project.path().join("text/link.txt"),
+    )
+    .expect("symlink");
+    std::fs::set_permissions(
+        project.path().join("src/lower.txt"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+    let report = project.run(Command::Format, &format_options());
+    assert_clean(&report);
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("victim.txt")).unwrap(),
+        "victim  \n",
+        "the link target is untouched"
+    );
+    assert!(
+        std::fs::symlink_metadata(project.path().join("text/link.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(project.read("src/lower.txt"), "LOWER\n");
+    let mode = std::fs::metadata(project.path().join("src/lower.txt"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o755, "the executable bit survives");
+
+    // A declared file that is a link is refused outright.
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nfiles = [\"text/link.txt\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    assert_fatal(
+        &project.run(Command::Format, &format_options()),
+        "reached through the symbolic link",
+    );
+}
+
+#[test]
+fn a_concurrent_edit_is_detected_and_nothing_is_written() {
+    let project = writable_project();
+    // A "formatter" that edits the target on disk while formatting it.
+    let target = project.path().join("src/lower.txt");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"text\", \"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{}\", \"edit\", \"{}\"]\npaths = [\"src\"]\nextensions = [\"txt\"]\n",
+            common::BOOTSTRAP,
+            fixture_formatter(),
+            target.to_str().unwrap().replace('\\', "/")
+        ),
+    );
+    let before = snapshot(&project);
+    let report = project.run(Command::Format, &format_options());
+    assert_line(
+        &report,
+        "src/lower.txt:B031: file changed after it was read; nothing was written, run again",
+    );
+    assert!(report.formatted.is_empty());
+    let mut expected = before;
+    for (name, bytes) in &mut expected {
+        if name == "src/lower.txt" {
+            *bytes = b"edited meanwhile\n".to_vec();
+        }
+    }
+    assert_eq!(
+        snapshot(&project),
+        expected,
+        "only the concurrent edit itself changed the tree"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_partial_failure_restores_prior_content() {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::read_to_string("/proc/self/status").is_ok_and(|s| s.contains("Uid:\t0\t")) {
+        eprintln!("skipped: running as root, permission checks do not apply");
+        return;
+    }
+    let project = writable_project();
+    project.file("text/locked/late.txt", "late  \n");
+    let locked = project.path().join("text/locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let before = snapshot(&project);
+    let report = project.run(Command::Format, &format_options());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod back");
+    assert_line(
+        &report,
+        "text/locked/late.txt:B031: cannot write the formatted file",
+    );
+    assert_line(
+        &report,
+        "bearout.toml:B031: formatting failed after 2 change(s); prior content was restored where possible",
+    );
+    assert!(report.formatted.is_empty());
+    assert_eq!(
+        snapshot(&project),
+        before,
+        "every completed replacement was undone"
+    );
+    assert!(leftovers(&project, "text").is_empty());
+    assert!(leftovers(&project, "src").is_empty());
+}

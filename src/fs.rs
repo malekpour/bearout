@@ -181,4 +181,21 @@ impl Writer<'_> {
     pub fn remove_file(&self, path: &ProjectPath) -> io::Result<()> {
         self.dir.remove_file(path.to_native())
     }
+
+    /// Replace an existing regular file atomically, keeping its
+    /// permissions (the executable bit included). The file must exist.
+    pub fn replace_preserving(&self, path: &ProjectPath, bytes: &[u8]) -> io::Result<()> {
+        let permissions = self.dir.metadata(path.to_native())?.permissions();
+        let parent = path.parent();
+        let directory = if parent.as_str().is_empty() {
+            self.dir.try_clone()?
+        } else {
+            self.dir.open_dir(parent.to_native())?
+        };
+        let mut temp = TempFile::new(&directory)?;
+        temp.write_all(bytes)?;
+        temp.as_file_mut().set_permissions(permissions)?;
+        temp.as_file_mut().sync_data()?;
+        temp.replace(path.file_name())
+    }
 }

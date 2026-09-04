@@ -19,6 +19,7 @@ pub mod editorconfig;
 pub mod external;
 pub mod selection;
 pub mod text;
+pub mod write;
 
 use crate::bootstrap::{Bootstrap, Limits};
 use crate::report::{Code, Diagnostic};

@@ -30,6 +30,16 @@ use crate::report::{Code, Diagnostic};
 /// Bytes examined for a NUL when deciding whether a file is binary.
 pub const SNIFF_BYTES: usize = 8 * 1024;
 
+impl LineEnding {
+    fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Lf => b"\n",
+            Self::CrLf => b"\r\n",
+            Self::Cr => b"\r",
+        }
+    }
+}
+
 const BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// `true` when the bytes are binary by declaration or by content.
@@ -235,9 +245,162 @@ pub fn check(
     diagnostics
 }
 
+/// The bytes `bytes` should have under `effective`: `Ok(None)` for a binary
+/// file, `Err` when the file cannot be decoded (B025), otherwise the
+/// normalized bytes, equal to the input when nothing needs to change. An
+/// empty file is never changed. Aspects are applied in a fixed order: the
+/// byte-order mark, then every line's terminator, trailing whitespace, and
+/// finally the end of the file.
+pub fn normalize(
+    path: &str,
+    bytes: &[u8],
+    declared_binary: Option<bool>,
+    effective: Effective,
+) -> Result<Option<Vec<u8>>, Diagnostic> {
+    if is_binary(bytes, declared_binary) {
+        return Ok(None);
+    }
+    let has_bom = bytes.starts_with(BOM);
+    let text = if has_bom { &bytes[BOM.len()..] } else { bytes };
+    if let Err(error) = std::str::from_utf8(text) {
+        return Err(Diagnostic::new(
+            Code::Encoding,
+            path,
+            format!("file is not valid UTF-8 and cannot be formatted: {error}"),
+        ));
+    }
+    if bytes.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() + 4);
+    let keep_bom = match effective.charset {
+        Some(Charset::Utf8) => false,
+        Some(Charset::Utf8Bom) => true,
+        None => has_bom,
+    };
+    if keep_bom {
+        out.extend_from_slice(BOM);
+    }
+    let lines = lines(text);
+    let default_terminator = effective
+        .end_of_line
+        .or_else(|| lines.iter().find_map(|line| line.terminator));
+    let final_required = effective.insert_final_newline;
+    let trimmed: Vec<(&[u8], Option<LineEnding>)> = lines
+        .iter()
+        .map(|line| {
+            let content = if effective.trim_trailing_whitespace == Some(true) {
+                let end = line
+                    .content
+                    .iter()
+                    .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+                    .map_or(0, |at| at + 1);
+                &line.content[..end]
+            } else {
+                line.content
+            };
+            (content, line.terminator)
+        })
+        .collect();
+    // Drop trailing blank lines when the end of the file is governed, so
+    // that a file of nothing but blank lines becomes empty.
+    let mut last = trimmed.len();
+    if final_required.is_some() {
+        while last > 0 && trimmed[last - 1].0.is_empty() && trimmed[last - 1].1.is_some() {
+            last -= 1;
+        }
+    }
+    for (index, (content, found)) in trimmed[..last].iter().enumerate() {
+        out.extend_from_slice(content);
+        let line = Line {
+            content,
+            terminator: *found,
+        };
+        let is_last = index + 1 == last;
+        let terminator = match (line.terminator, effective.end_of_line) {
+            (Some(_), Some(configured)) => Some(configured),
+            (found, None) => found,
+            (None, Some(_)) => None,
+        };
+        let terminator = match (is_last, final_required) {
+            (true, Some(true)) => terminator.or(default_terminator).or(Some(LineEnding::Lf)),
+            (true, Some(false)) => None,
+            _ => terminator,
+        };
+        if let Some(terminator) = terminator {
+            out.extend_from_slice(terminator.bytes());
+        }
+    }
+    Ok(Some(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fix(bytes: &[u8], effective: Effective) -> Vec<u8> {
+        normalize("f", bytes, None, effective)
+            .unwrap()
+            .expect("text")
+    }
+
+    #[test]
+    fn normalization_fixes_what_the_checks_report_and_is_idempotent() {
+        let cases: [(&[u8], &[u8]); 8] = [
+            (b"a\r\nb  \nc\t\nd\n\n\n", b"a\nb\nc\nd\n"),
+            (b"no newline", b"no newline\n"),
+            (b"", b""),
+            (b"\n\n\n", b""),
+            (b"a\rb", b"a\nb\n"),
+            (b"  \n", b""),
+            (b"\xEF\xBB\xBFa\n", b"a\n"),
+            (b"a\nb\n", b"a\nb\n"),
+        ];
+        for (input, expected) in cases {
+            let once = fix(input, all());
+            assert_eq!(once, expected, "{input:?}");
+            assert_eq!(fix(&once, all()), once, "idempotent for {input:?}");
+            assert!(
+                check("f", &once, None, all()).is_empty(),
+                "clean after {input:?}"
+            );
+        }
+        let bom = Effective {
+            charset: Some(Charset::Utf8Bom),
+            ..all()
+        };
+        assert_eq!(fix(b"a\n", bom), b"\xEF\xBB\xBFa\n");
+        assert_eq!(fix(b"", bom), b"", "an empty file stays empty");
+        let no_final = Effective {
+            insert_final_newline: Some(false),
+            ..all()
+        };
+        assert_eq!(fix(b"a\n\n", no_final), b"a");
+        let crlf = Effective {
+            end_of_line: Some(LineEnding::CrLf),
+            ..all()
+        };
+        assert_eq!(fix(b"a\nb", crlf), b"a\r\nb\r\n");
+        let keep = Effective::default();
+        assert_eq!(
+            fix(b"a \r\nb", keep),
+            b"a \r\nb",
+            "nothing configured, nothing changed"
+        );
+        assert_eq!(
+            fix(
+                b"a\r\nb",
+                Effective {
+                    insert_final_newline: Some(true),
+                    ..keep
+                }
+            ),
+            b"a\r\nb\r\n",
+            "the file's own terminator is reused"
+        );
+        assert!(normalize("f", b"\xff", None, all()).is_err());
+        assert!(normalize("f", b"\0 ", None, all()).unwrap().is_none());
+    }
 
     fn all() -> Effective {
         Effective {

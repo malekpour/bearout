@@ -92,6 +92,7 @@ directory and for fatal outcomes.
 | B028 | error | A line ends with spaces or tabs under `trim_trailing_whitespace = true`. One per file, naming the first line. |
 | B029 | error | A selected file differs from the output of the formatter assigned to it; `bearout format` rewrites it. |
 | B030 | error | The formatter assigned to a selected file exited with a non-zero status, timed out, produced more output than the bound allows, or ended abnormally. A formatter that cannot start at all is fatal. |
+| B031 | error | A formatting write was refused (the file is reached through a symbolic link, or changed after it was read) or failed, with restoration attempted and reported. |
 
 ## Repository rule identifiers
 

@@ -9,8 +9,9 @@
 //! echoes, `name <text>` replaces the first line with `name=<text>`,
 //! `config <file>` replaces the first line with the file read from the
 //! working directory, `cache` writes a cache file into the working
-//! directory then echoes, `env` prints the color-related environment, and
-//! `crash` aborts.
+//! directory then echoes, `env` prints the color-related environment,
+//! `edit <file>` overwrites that file while uppercasing, and `crash`
+//! aborts.
 
 use std::io::{Read, Write};
 
@@ -82,6 +83,13 @@ fn main() {
             let no_color = std::env::var("NO_COLOR").unwrap_or_default();
             let term = std::env::var("TERM").unwrap_or_default();
             out.write_all(format!("NO_COLOR={no_color} TERM={term}\n").as_bytes())
+        }
+        Some("edit") => {
+            // Overwrite the named file while "formatting" it, to stand in
+            // for a concurrent editor.
+            let file = args.get(1).cloned().unwrap_or_default();
+            std::fs::write(&file, b"edited meanwhile\n").expect("edit target");
+            out.write_all(&input.to_ascii_uppercase())
         }
         Some("crash") => std::process::abort(),
         _ => out.write_all(&input),

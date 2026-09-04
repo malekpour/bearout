@@ -77,6 +77,10 @@ pub enum Command {
     Check,
     /// Check, then generate in the given mode.
     Generate(Mode),
+    /// Rewrite the selected files of the working directory to satisfy the
+    /// configured hygiene and formatters. Runs no repository policy.
+    /// **Experimental.**
+    Format,
 }
 
 /// Where a run reads the project from.
@@ -243,6 +247,18 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
                 .to_owned(),
         );
     }
+    if command == Command::Format && options.source != Source::WorkingDirectory {
+        return Err(
+            "formatting writes to the working directory; the index and revision sources are read-only and support checking only"
+                .to_owned(),
+        );
+    }
+    if command == Command::Format && options.baseline.is_some() {
+        return Err(
+            "formatting never touches a comparison baseline; drop the baseline to format"
+                .to_owned(),
+        );
+    }
 
     // Phase: bootstrap. The sources are opened before anything is read, so
     // every input of the run, the bootstrap included, comes from one tree,
@@ -279,6 +295,28 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
             "entry module `{}` is not a file inside the project",
             bootstrap.entry
         ));
+    }
+
+    // The formatting write: selection and reading as for a check, then
+    // the transaction, and nothing else.
+    if command == Command::Format {
+        let Opened::Working(working) = &opened else {
+            unreachable!("rejected before the tree opened");
+        };
+        let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
+        report.files = selected.len();
+        let mut diagnostics = Vec::new();
+        let loaded = hygiene::load(tree, selected, &bootstrap.limits, &mut diagnostics);
+        report.formatted = hygiene::write::format(
+            working,
+            &loaded,
+            &bootstrap,
+            options.allow_formatters,
+            &mut diagnostics,
+        )?;
+        report.extend(diagnostics);
+        report.finish();
+        return Ok(report);
     }
 
     // Phases: discovery and parsing. Resources first; a path they claim is

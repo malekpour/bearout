@@ -68,6 +68,13 @@ enum Subcommands {
         #[command(flatten)]
         source: SourceArgs,
     },
+    /// Rewrite the selected files so they satisfy the configured hygiene
+    /// and formatters. Working directory only; runs no repository policy.
+    Format {
+        /// Project directory containing bearout.toml.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Validate a project, then render its generators' outputs.
     Generate {
         /// Project directory containing bearout.toml.
@@ -86,6 +93,16 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let (path, command, verb, source) = match cli.command {
         Subcommands::Check { path, source } => (path, Command::Check, "checked", source),
+        Subcommands::Format { path } => (
+            path,
+            Command::Format,
+            "formatted",
+            SourceArgs {
+                index: false,
+                revision: None,
+                baseline: None,
+            },
+        ),
         Subcommands::Generate {
             path,
             check: false,
@@ -135,6 +152,26 @@ fn print_text(report: &Report, verb: &str) {
     }
     for diagnostic in &report.diagnostics {
         eprintln!("{diagnostic}");
+    }
+    if verb == "formatted" {
+        for path in &report.formatted {
+            println!("formatted {path}");
+        }
+        if report.is_clean() {
+            println!(
+                "formatted {} of {} selected file(s)",
+                report.formatted.len(),
+                report.files
+            );
+        } else {
+            eprintln!(
+                "formatted {} of {} selected file(s): {} error(s)",
+                report.formatted.len(),
+                report.files,
+                report.errors()
+            );
+        }
+        return;
     }
     let outputs = if report.outputs.is_empty() {
         String::new()

@@ -73,6 +73,8 @@ pub enum Code {
     FormatDifference,
     /// A formatter run failed for a selected file.
     FormatterFailed,
+    /// A formatting write was refused or failed.
+    FormatWrite,
 }
 
 impl Code {
@@ -110,6 +112,7 @@ impl Code {
             Self::TrailingWhitespace => "B028",
             Self::FormatDifference => "B029",
             Self::FormatterFailed => "B030",
+            Self::FormatWrite => "B031",
         }
     }
 
@@ -123,7 +126,7 @@ impl Code {
     }
 
     /// Every code, in catalog order.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Unreadable,
         Self::Envelope,
         Self::SchemaIdentity,
@@ -154,6 +157,7 @@ impl Code {
         Self::TrailingWhitespace,
         Self::FormatDifference,
         Self::FormatterFailed,
+        Self::FormatWrite,
     ];
 }
 
@@ -327,6 +331,10 @@ pub struct Report {
     pub baseline: Option<SourceInfo>,
     /// Findings in stable order.
     pub diagnostics: Vec<Diagnostic>,
+    /// Files rewritten by `format`, as project-relative paths, in path
+    /// order; empty for every other command and when nothing changed.
+    /// Experimental.
+    pub formatted: Vec<String>,
     /// Generated outputs, as project-relative paths, only when generation
     /// succeeded: in write mode the outputs delivered or already current; in
     /// check mode the outputs verified as current. Empty when rendering,
@@ -383,6 +391,8 @@ impl Report {
         self.diagnostics.dedup();
         self.outputs.sort();
         self.outputs.dedup();
+        self.formatted.sort();
+        self.formatted.dedup();
         self.ok = self.is_clean();
     }
 
