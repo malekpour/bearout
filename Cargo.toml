@@ -25,6 +25,8 @@ include = [
   "/src/**",
 ]
 publish = ["crates-io"]
+# `cargo run` means the engine, not the feature-gated test fixture binary.
+default-run = "bearout"
 
 [[bin]]
 doc = false

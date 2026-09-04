@@ -22,6 +22,15 @@ Codes are experimental until the first tagged release. After that:
 | 1 | The run completed and produced at least one error-severity finding. |
 | 2 | Invocation, configuration, source, or engine failure: the report's `fatal` field explains. |
 
+`bearout test` keeps the same three codes with the meaning of its own
+report: 0 when every fixture case passed, 1 when at least one well-formed
+case did not match its expectation, 2 when the suite could not run
+(invocation, source, fixture definition, or runner failure). A case that
+did not match carries no B-series code; the test report lists its
+expected and actual outcome classes, missing expectations, and unexpected
+diagnostics instead, and a contract diagnostic inside a case is test data
+rather than a finding of the run.
+
 Source failures are fatal: a Git-backed source that cannot be opened (no
 repository, no `git` executable, an unmerged index), a revision that does
 not resolve, writing generation requested against the index or a

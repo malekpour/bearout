@@ -84,6 +84,25 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   files safely (B031). The report counts selected `files` and lists
   `formatted` paths.
 
+- Experimental contract fixtures. An explicit `[fixtures] files` grant
+  names TOML fixture files whose `[[cases]]` derive a virtual candidate
+  from the selected source through a read-only overlay (`write` with
+  inline `content` or a `payload` file, `delete`, `move`), optionally
+  compare it with the unmodified source (`baseline = true`), and expect
+  `clean`, `diagnostics`, or `fatal`. Expected diagnostics are matched
+  structurally (`code`, `severity`, `path`, `line`, `side`, `rule`,
+  `message`) as a multiset under `match = "exact"` (default) or
+  `"contains"`. `bearout test [PATH]` (library: `bearout::test`) runs the
+  suite from the working directory, `--index`, or `--revision`, never
+  writes, formats, or delivers, refuses `--baseline`, keeps formatters
+  behind `--allow-formatters`, and exits 0 when every case passed, 1 on an
+  assertion failure, 2 when the suite cannot run. The test report
+  (`TestReport`, JSON for every outcome) is a surface distinct from the
+  contract report; assertion failures carry no B-series code. New limits
+  `limits.fixture_cases`, `limits.fixture_mutations`, and
+  `limits.fixture_bytes`. `check`, `generate`, and `format` never execute
+  fixtures. The `decision-records` sample declares a suite.
+
 ### Changed
 
 - Markdown reference checking moved out of the identifier graph; explicit
@@ -98,6 +117,8 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   behaved this way before.
 - `Options` gained the `source` field; code constructing it by struct
   literal should use `..Options::default()`.
+- `cargo run` in the repository runs the `bearout` binary by default; the
+  feature-gated test fixture formatter must be named with `--bin`.
 
 ## 0.1.0 - 2026-09-03
 

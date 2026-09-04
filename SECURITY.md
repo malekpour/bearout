@@ -15,7 +15,11 @@ limits:
 - repository policy runs in Starlark with no filesystem, environment,
   network, clock, or random access, with `load()` confined to the rules
   root, and under execution-tick, heap, and call-stack limits with
-  cancellation.
+  cancellation;
+- contract fixtures (`bearout test`) check virtual candidates through a
+  read-only overlay that writes nothing, exposes nothing to policy, and
+  runs declared formatters only under the same explicit authorization as
+  `check`, with the suite bounded by its own limits.
 
 These measures bound accidents and runaway policy code. They are not a
 sandbox: checking a repository written by a hostile author is not a

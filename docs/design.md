@@ -416,6 +416,115 @@ restoration failures (B031); and no temporary file remains. The
 generated-output manifest plays no part: the command itself is the
 authorization to change these files.
 
+## Contract fixtures
+
+Everything here is experimental. `bearout test` is a general facility for
+proving a repository's policy against controlled candidate mutations; the
+vocabulary encodes no repository's records, statuses, or naming rules,
+and the kernel learns nothing about what a case means.
+
+**Declaration.** `[fixtures] files` names fixture files one by one:
+sorted, unique, portable, `.toml`, never a Bearout manifest, and never
+beneath a resource or output root where discovery or delivery would treat
+them as something else. Nothing is scanned for, and a project without the
+grant has nothing to test: `bearout test` is fatal there rather than an
+empty pass. Fixture files and payloads are read from the selected source
+through the same read tree as everything else, within
+`limits.fixture_bytes`, never through a symbolic link; `check`,
+`generate`, and `format` never read them.
+
+**Case model.** Each file holds `[[cases]]` in file order; suite order is
+fixture files sorted, then file order, and case names are unique across
+the suite. A case has an ordered list of mutations, whether the unmodified
+source is supplied as the comparison baseline, an expected outcome class
+(`clean`, `diagnostics`, `fatal`), structured expected diagnostics, and an
+explicit matching mode. The mutation vocabulary is the smallest useful
+one: write or replace one regular file (inline UTF-8 `content` or a
+project-relative `payload` file of the selected source), delete one
+regular file, move one regular file. Directory moves, recursive deletion,
+modes, links, gitlinks, scripts, templating, environment expansion, and
+random mutation generation are out of scope.
+
+**Overlay.** A case's candidate is a read-only overlay over the selected
+tree holding only the written bytes, tombstones for deletions and move
+sources, and move destinations that read the source's bytes from the
+unchanged base. No repository copy is materialized, and every read goes
+through the base, so the overlay has no ambient filesystem access and no
+write authority reaches the checking pipeline. It implements the same
+observable tree semantics as the other sources: sorted walks that never
+follow links or enter submodules, file and directory existence (a
+directory exists when the base has it or a written file lies beneath it),
+subtree confinement through the base's own subtrees, and bounded reads
+that report the bytes pulled. Mutations are validated in order before any
+case runs, over the virtual state the earlier ones produced: each path is
+touched once per case, a write replaces a regular file or creates one
+where nothing exists, a delete and a move source must name a regular
+file of the base, a move destination must not exist, and no touched path
+may be, lie beneath, or be reached through a link, a submodule, or a
+regular file. Every case starts from the same unchanged base, so nothing
+leaks between cases; the repository-wide hygiene universe of a
+working-directory source is Git's listing plus the overlay's written and
+moved files, filtered by what the overlay presents. The whole suite,
+payloads included, is captured before any mutation is applied, so a
+mutation cannot alter which cases run or what they write.
+
+**Authority.** A case with `baseline = true` compares the overlaid
+candidate with the unmodified selected tree under the comparison
+semantics above: the candidate's bootstrap, limits, policy, and shapes
+interpret both sides, the baseline is passive historical data, and the
+comparison view identifies the baseline with whatever identity the
+source has (tree and digest for a revision, digest for the index, none
+for the working directory). Each case is one evaluation of the same
+single-run engine `check` uses, over the overlay and the optional
+baseline, with `Command::Check`: no generation planning, rendering,
+delivery, or formatting write ever runs from a fixture. Policy observes an
+ordinary project and an ordinary comparison; nothing exposes fixture
+state, mutations, or the overlay to Starlark, and the fixture runner adds
+no filesystem, process, environment, network, clock, or random access.
+
+**Expectations.** The outcome class of a candidate is `fatal` when its
+evaluation failed, `diagnostics` when it reported anything (warnings
+included), `clean` otherwise. A `fatal` expectation may pin the message
+with `fatal = "text"`. Expected diagnostics name fields, never rendered
+text: `code`, and optionally `severity` (which must agree with the code),
+`path`, `line`, `side`, the repository `rule` identifier, and the exact
+`message` as a deliberately brittle assertion. Matching is a multiset
+assignment: each expectation consumes at most one diagnostic and each
+diagnostic satisfies at most one expectation, found as a deterministic
+maximum bipartite matching from expectations in declaration order and
+diagnostics in report order, so the result never depends on how
+expectations overlap. `match = "exact"`, the default, fails the case on
+any unmatched diagnostic; `match = "contains"` allows unrelated ones. A
+contract diagnostic is test data; only an unexpected one, a missing one,
+or a mismatched outcome class fails a case.
+
+**Three failure kinds.** A contract diagnostic that a case expects is a
+pass. A well-formed case whose result does not match is an assertion
+failure: the suite completes, the case is reported with its expected and
+actual outcome classes, missing expectations, unexpected diagnostics, and
+actual fatal message, and the exit code is 1. A suite that cannot run is
+fatal with exit code 2 and reports no case at all: malformed fixture
+syntax, an invalid mutation, a missing or linked payload, a repeated case
+name, a source or tree that cannot be opened, an exceeded fixture limit,
+or a formatter declaration without `--allow-formatters`. Assertion
+failures carry no B-series code: those describe checked repository
+findings, and fixture mismatches are a separate machine-facing surface,
+the test report, which is deterministic in text and JSON and valid JSON
+on every exit path.
+
+**Sources and limits.** The suite reads from the working directory, the
+index, or a revision with the hardened semantics above; the suite, the
+policy, resources, documents, and payloads all come from that one tree.
+There is no `--baseline`; each case decides. `limits.fixture_cases`
+bounds the cases of a suite, `limits.fixture_mutations` the mutations
+across it, and `limits.fixture_bytes` the bytes of fixture files and
+payloads read, so a repository cannot create effectively unlimited engine
+evaluations through fixtures. Formatters keep their authorization
+boundary: a bootstrap that declares them is refused before any case runs
+unless `--allow-formatters` is given, and a case whose mutation declares
+them is an observable fatal outcome of that candidate, never a silent
+authorization.
+
 ## Schema and resource identity
 
 A schema identifier is `<namespace segments>/<kind>@<major>`, lowercase
@@ -528,4 +637,7 @@ B019 and touches nothing in the tree.
 Bearout is a capability-confined host with resource limits. It is not a
 sandbox for hostile repositories: the limits bound runaway policy code and
 the capability confines writes, but checking a repository from an untrusted
-author is not a supported security boundary. See `SECURITY.md`.
+author is not a supported security boundary. Contract fixtures do not
+change this: they run the same policy over virtual candidates, add no
+capability, and write nothing, but a fixture suite from an untrusted
+author is as trusted as its policy. See `SECURITY.md`.

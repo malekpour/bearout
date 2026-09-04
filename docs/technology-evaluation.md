@@ -135,6 +135,25 @@ processes rather than confined scripts. Bearout does not read `mise.toml`
 or detect tool versions: the calling repository runs Bearout inside the
 environment that pins its tools.
 
+## Fixture candidates: a read-only overlay
+
+`bearout test` needs a candidate that differs from the selected source by
+a few controlled mutations, for each case, without changing anything on
+disk. Materializing a copy of the repository in a temporary directory per
+case was rejected: it costs a full copy per case, needs write authority
+and ambient paths inside the checking pipeline, cannot represent an index
+or revision source without a checkout, and leaves cleanup as a failure
+mode. Materializing only the mutated files over a copy-on-write union
+filesystem depends on platform facilities Bearout does not otherwise
+need. The overlay is instead an in-process implementation of the same
+read tree interface every source implements, holding only the written
+bytes, tombstones, and move aliases, with every other read falling
+through to the base tree. It composes with all three sources, keeps the
+overlay's authority strictly narrower than the base's (reads only), and
+lets each case start from the same unchanged base by construction. The
+cost is one more implementation of the tree semantics to keep identical,
+which the unit tests exercise against the working-directory source.
+
 ## Other components
 
 - `toml_edit` parses the bootstrap, front matter, header-only resources,

@@ -41,6 +41,14 @@ Synthetic. The decisions are about this sample's own conventions.
   selection is reported against the baseline. Without a baseline the check
   is inactive. Which records are protected and what may change is this
   repository's decision, not the kernel's.
+- **Contract fixtures.** `contract-tests/log.test.toml`, declared in
+  `[fixtures]`, proves the policy against virtual mutations with
+  `bearout test`: a new proposed record is clean, deleting a record from
+  the middle of the log is B015 `numbering`, and with the unmodified log
+  as the baseline, deleting a rejected record is B015
+  `protected-record-deleted` on the baseline side while rewriting a
+  ruling from a payload file is B015 `protected-rulings`. Nothing on
+  disk changes.
 
 ## Resource model
 
@@ -73,6 +81,10 @@ Records: `decision-0001` accepted, `decision-0002` superseded,
   `decision-0005.md` instead: B015 `protected-record-deleted`, reported on
   the baseline side as `baseline:records/decision-0005.md`. Change only a
   title: clean.
+- Run `bearout test`: four cases pass. Change `expect = "clean"` of the
+  first case to `"fatal"`: that case fails with exit code 1, and the
+  working tree is untouched. Misspell a key in the fixture file: exit
+  code 2, no case runs.
 
 ## Sample omissions
 

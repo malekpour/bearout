@@ -53,6 +53,9 @@ license = "Apache-2.0"  # stamped into generated headers
 roots = ["docs"]        # walked recursively for `*.md`
 files = ["README.md"]   # named one by one
 
+[fixtures]              # optional; contract fixture files for `bearout test`
+files = ["contract-tests/log.test.toml"]
+
 [limits]                # optional; see docs/design.md for which defaults are measured
 ticks = 1000000
 template_fuel = 2000000
@@ -211,6 +214,8 @@ bearout generate --check --index [path] # verify outputs as staged
 bearout check --index --baseline HEAD   # and compare with an exact revision
 bearout --allow-formatters check [path] # also run the declared formatters
 bearout --allow-formatters format [path] # rewrite selected files in place
+bearout test [path]                     # run the declared contract fixtures
+bearout test --index [path]             # the suite, policy, and payloads as staged
 ```
 
 Diagnostics use stable codes and forward-slash project-relative paths on
@@ -361,6 +366,94 @@ completed replacements if a later one fails. Nothing is created or
 deleted, links are never followed, index and revision sources and
 comparison baselines are never formatted, and `generate` never rewrites
 sources.
+
+## Contract fixtures
+
+> [!WARNING]
+> The fixture vocabulary, the `test` command, and the test report are
+> experimental.
+
+`bearout test` proves a repository's policy against controlled mutations
+of the selected source without changing anything. An explicit
+`[fixtures] files` grant names the fixture files one by one; nothing is
+scanned for, and `check`, `generate`, and `format` never execute them.
+Each fixture file holds named cases:
+
+```toml
+[[cases]]
+name = "deleting a rejected record is caught against the unmodified log"
+expect = "diagnostics"          # or "clean" or "fatal"
+baseline = true                 # compare with the unmodified source
+match = "exact"                 # the default; or "contains"
+
+[[cases.mutations]]
+delete = "records/decision-0005.md"
+
+[[cases.diagnostics]]
+code = "B015"
+side = "baseline"
+path = "records/decision-0005.md"
+rule = "protected-record-deleted"
+```
+
+A case derives its candidate from the selected source by applying its
+mutations in order through a read-only overlay: `write` replaces or
+creates one regular file from inline `content` or a project-relative
+`payload` file of the selected source, `delete` removes one regular file,
+and `move` relocates one to a path that does not exist. Each path is
+touched once per case, nothing beneath a file or through a symbolic link
+is touched, and every conflict is refused before any case runs. Every
+case starts from the same unchanged source; the working directory, the
+index, Git objects, and the fixture files are never written.
+
+`expect` names the outcome class: `clean` (no diagnostic at all),
+`diagnostics`, or `fatal`, optionally with `fatal = "text"` the fatal
+message must contain. Expected diagnostics are structured, never rendered
+text: `code` is required, and `severity`, `path`, `line`, `side`
+(`candidate` or `baseline`), the repository `rule`, and the exact
+`message` are optional. They are matched as a multiset, so a repeated
+diagnostic needs a repeated expectation. `match = "exact"`, the default,
+also fails the case on any diagnostic it did not expect; `match =
+"contains"` allows unrelated diagnostics. A contract diagnostic is test
+data and fails a case only when unexpected.
+
+With `baseline = true` the unmodified selected source is the comparison
+baseline and the overlaid candidate is the candidate, with the Phase 3
+authority: the candidate's bootstrap and policy interpret both sides, and
+`project["comparison"]` holds the historical view and the change facts.
+Policy sees an ordinary project and an ordinary comparison; nothing
+exposes fixtures, mutations, or the overlay to Starlark.
+
+The suite, payloads included, is read from the selected source before any
+mutation is applied, so `--index` and `--revision <REV>` test exactly what
+is staged or committed: an unstaged correction cannot hide a broken
+staged fixture, and an untracked payload cannot satisfy an index fixture.
+`limits.fixture_cases`, `limits.fixture_mutations`, and
+`limits.fixture_bytes` bound a suite. A bootstrap that declares
+formatters needs `--allow-formatters` before any case runs; nothing is
+authorized silently. There is no `--baseline`: each case decides.
+
+The text report prints one line per case and the details of each failed
+case (the outcome mismatch, the fatal message, missing expectations,
+unexpected diagnostics); `--format json` prints the test report, a
+surface distinct from the contract report, with the source identity,
+counts, and every case in suite order. Exit 0 when every case passed, 1
+when a well-formed case did not match, 2 when the suite could not run: a
+malformed fixture, an invalid mutation, a missing or linked payload, a
+repeated case name, an exceeded limit, or a source that cannot be opened.
+A broken suite is never reported as a passing one, and a project without
+`[fixtures]` is a fatal outcome rather than an empty pass.
+
+Mutation-style tests written in a scripting language, which copy a
+repository, edit a file, run the checker, and grep its output, map onto
+fixtures case by case: the copy becomes the overlay, the edit becomes a
+`write`, `delete`, or `move` (a payload file holds a whole replacement),
+the grep becomes a structured expectation, and a test that asserted a
+crash becomes `expect = "fatal"`. Tests that mutate directories, run
+shell commands, generate random edits, or inspect the checker's text are
+outside the vocabulary and stay where they are. No compatibility with any
+existing test suite is claimed; the
+[`decision-records`](samples/decision-records/) sample shows the shape.
 
 ## Samples
 

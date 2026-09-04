@@ -120,7 +120,7 @@ fn main() -> ExitCode {
             };
             let report = bearout::test(&path, &options);
             return match cli.format {
-                Format::Json => print_json(&report),
+                Format::Json => print_json(&report, report.fatal.is_some(), report.ok),
                 Format::Text => {
                     print_test_text(&report);
                     exit_code(report.fatal.is_some(), report.ok)
@@ -147,7 +147,7 @@ fn main() -> ExitCode {
     let report = bearout::run(&path, command, &options);
 
     match cli.format {
-        Format::Json => print_json(&report),
+        Format::Json => print_json(&report, report.fatal.is_some(), report.is_clean()),
         Format::Text => {
             print_text(&report, verb);
             exit_code(report.fatal.is_some(), report.is_clean())
@@ -167,20 +167,10 @@ fn exit_code(fatal: bool, ok: bool) -> ExitCode {
     }
 }
 
-/// Print one JSON document for any outcome, then exit by `ok` and `fatal`
-/// read back from it, so JSON stays valid on every path.
-fn print_json(report: &impl serde::Serialize) -> ExitCode {
-    let json = match serde_json::to_value(report) {
-        Ok(json) => json,
-        Err(error) => {
-            println!(
-                "{{\"ok\":false,\"fatal\":{}}}",
-                serde_json::Value::String(error.to_string())
-            );
-            return ExitCode::from(2);
-        }
-    };
-    match serde_json::to_string_pretty(&json) {
+/// Print one JSON document for any outcome, so JSON stays valid on every
+/// path, then exit by the report's own `fatal` and `ok`.
+fn print_json(report: &impl serde::Serialize, fatal: bool, ok: bool) -> ExitCode {
+    match serde_json::to_string_pretty(report) {
         Ok(text) => println!("{text}"),
         Err(error) => {
             println!(
@@ -190,10 +180,7 @@ fn print_json(report: &impl serde::Serialize) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    exit_code(
-        !json["fatal"].is_null(),
-        json["ok"].as_bool().unwrap_or(false),
-    )
+    exit_code(fatal, ok)
 }
 
 /// One line per case on standard output, the details of each failed case

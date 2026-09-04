@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: Apache-2.0
+# Contract fixtures for the decision log: each case checks a virtual
+# mutation of this sample against its own policy, without touching the
+# working tree. Run with `bearout test samples/decision-records`.
+
+# A new proposed record is free.
+[[cases]]
+name = "a new proposed record is clean"
+expect = "clean"
+
+[[cases.mutations]]
+write = "records/decision-0006.md"
+content = '''+++
+schema = "example/decision-records/decision@1"
+id = "decision-0006"
+title = "Archive rejected records after a year"
+status = "proposed"
+date = "2026-09-04"
++++
+
+# Archive rejected records after a year
+
+## Context
+
+Rejected records accumulate.
+'''
+
+# Removing a record from the middle of the log breaks the numbering
+# invariant, which the policy attaches to the first record out of place.
+[[cases]]
+name = "removing a record breaks the numbering"
+expect = "diagnostics"
+
+[[cases.mutations]]
+delete = "records/decision-0003.md"
+
+[[cases.diagnostics]]
+code = "B015"
+path = "records/decision-0004.md"
+rule = "numbering"
+
+# With the unmodified log as the baseline, deleting a resolved record is
+# reported on the baseline side, where the record still exists.
+[[cases]]
+name = "deleting a rejected record is caught against the unmodified log"
+expect = "diagnostics"
+baseline = true
+
+[[cases.mutations]]
+delete = "records/decision-0005.md"
+
+[[cases.diagnostics]]
+code = "B015"
+side = "baseline"
+path = "records/decision-0005.md"
+rule = "protected-record-deleted"
+
+# A payload replaces a whole record; here one ruling's text is rewritten.
+[[cases]]
+name = "rewriting a ruling of an accepted record is caught"
+expect = "diagnostics"
+baseline = true
+
+[[cases.mutations]]
+write = "records/decision-0001.md"
+payload = "contract-tests/payloads/decision-0001-rewritten.md"
+
+[[cases.diagnostics]]
+code = "B015"
+path = "records/decision-0001.md"
+rule = "protected-rulings"

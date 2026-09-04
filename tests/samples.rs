@@ -73,6 +73,33 @@ fn every_sample_is_clean_with_fresh_outputs() {
     }
 }
 
+/// Every sample that declares `[fixtures]` passes its own suite, from
+/// the working directory, and the suite leaves the sample untouched.
+#[test]
+fn samples_with_fixtures_pass_their_suites() {
+    let mut with_fixtures = Vec::new();
+    for name in sample_dirs() {
+        let root = samples_dir().join(&name);
+        let bootstrap = fs::read_to_string(root.join("bearout.toml")).expect("bootstrap");
+        let parsed = bearout::bootstrap::parse(&bootstrap).expect("bootstrap parses");
+        if !parsed.declares_fixtures() {
+            continue;
+        }
+        let report = bearout::test(&root, &bearout::Options::default());
+        assert!(
+            report.ok,
+            "sample {name}:\n{}",
+            serde_json::to_string_pretty(&report).expect("json")
+        );
+        assert!(
+            report.total > 0,
+            "{name} declares fixtures but runs no case"
+        );
+        with_fixtures.push(name);
+    }
+    assert_eq!(with_fixtures, ["decision-records"]);
+}
+
 #[test]
 fn readmes_follow_the_standard_sections() {
     for name in sample_dirs() {
