@@ -165,10 +165,20 @@ pub struct History {
     pub commits: Vec<Commit>,
 }
 
-/// A capture together with the tree the policy is read from and how the
-/// report identifies that tree.
-pub struct Captured {
-    pub history: History,
+/// A source opened for a capture: revisions resolved exactly once, the
+/// policy tree, and how the report identifies it. The facts are read
+/// afterwards by [`Opened::capture`], under the limits of the bootstrap
+/// that tree holds, so a name is never resolved twice.
+pub struct Opened {
+    git: Git,
+    prefix: Vec<u8>,
+    mode: Mode,
+    base: Option<Reference>,
+    head: Option<Reference>,
+    /// The captured index of a pending commit, kept until its staged
+    /// changes are listed from the same snapshot.
+    snapshot: Option<IndexSnapshot>,
+    message_file: Option<PathBuf>,
     pub policy_tree: GitTree,
     pub source: SourceInfo,
 }
@@ -263,155 +273,19 @@ fn resolve_commit(git: &Git, revision: &str) -> Result<ObjectId, String> {
     }
 }
 
-/// Capture the commits reachable from `head` but not from `base`, and
-/// the policy tree of the resolved head.
-pub fn range(
-    root: &Path,
-    base: Option<&str>,
-    head: &str,
-    limits: &Limits,
-) -> Result<Captured, String> {
+/// Open a range: resolve `head` and `base` exactly once and read the
+/// policy tree of the resolved head.
+pub fn range(root: &Path, base: Option<&str>, head: &str) -> Result<Opened, String> {
     let git = Git::new(root).map_err(|error| error.to_string())?;
     let location = git.locate().map_err(|error| error.to_string())?;
     let head_id = resolve_commit(&git, head)?;
-    let base_id = match base {
-        Some(base) => Some(resolve_commit(&git, base)?),
+    let base = match base {
+        Some(base) => Some(Reference {
+            revision: base.to_owned(),
+            id: resolve_commit(&git, base)?,
+        }),
         None => None,
     };
-    let mut budget = Budget::new(limits);
-    let shallow = shallow_boundaries(&git, &mut budget)?;
-
-    // The set: Git reachability, one listing, bounded by the commit limit
-    // plus one so that an over-limit range is detected without listing
-    // everything reachable.
-    let max_count = limits.history_commits.saturating_add(1).to_string();
-    let mut args = vec!["rev-list", "--max-count", &max_count, head_id.as_str()];
-    let excluded = base_id.as_ref().map(|id| format!("^{id}"));
-    if let Some(excluded) = &excluded {
-        args.push(excluded);
-    }
-    let listing = budget.listing(&git, &args, "the commit range")?;
-    let listing =
-        String::from_utf8(listing).map_err(|_| "git rev-list printed invalid UTF-8".to_owned())?;
-    let mut ids = Vec::new();
-    for line in listing.lines() {
-        ids.push(ObjectId::parse(line.trim())?);
-    }
-    if ids.len() > limits.history_commits {
-        return Err(format!(
-            "the range holds more than `limits.history_commits` = {} commit(s)",
-            limits.history_commits
-        ));
-    }
-    let in_set: BTreeSet<&ObjectId> = ids.iter().collect();
-    for id in &ids {
-        if shallow.contains(id) {
-            return Err(format!(
-                "commit {id} is a shallow boundary: the history reachable from `{head}` is incomplete in this repository; deepen the clone or give a base above the boundary"
-            ));
-        }
-    }
-
-    // Raw commit objects, each rejected from its announced size before it
-    // is loaded.
-    let mut objects: HashMap<ObjectId, RawCommit> = HashMap::new();
-    if !ids.is_empty() {
-        let mut batch =
-            Batch::spawn(&git, "--batch").map_err(|error| git::spawn_error(&error).to_string())?;
-        for id in &ids {
-            let raw = read_commit(&mut batch, id, limits, &mut budget)?;
-            objects.insert(id.clone(), raw);
-        }
-    }
-
-    // Oldest first: a commit is eligible once every parent inside the set
-    // is emitted; the smallest identity among the eligible goes first.
-    let mut pending_parents: BTreeMap<&ObjectId, usize> = BTreeMap::new();
-    let mut children: HashMap<&ObjectId, Vec<&ObjectId>> = HashMap::new();
-    for id in &ids {
-        let parents = &objects[id].parents;
-        let inside = parents
-            .iter()
-            .filter(|parent| in_set.contains(parent))
-            .count();
-        pending_parents.insert(id, inside);
-        for parent in parents {
-            if let Some(parent) = in_set.get(parent) {
-                children.entry(parent).or_default().push(id);
-            }
-        }
-    }
-    let mut eligible: BTreeSet<&ObjectId> = pending_parents
-        .iter()
-        .filter(|(_, count)| **count == 0)
-        .map(|(id, _)| *id)
-        .collect();
-    let mut order: Vec<&ObjectId> = Vec::with_capacity(ids.len());
-    while let Some(next) = eligible.pop_first() {
-        order.push(next);
-        for child in children.get(next).into_iter().flatten() {
-            let count = pending_parents
-                .get_mut(child)
-                .expect("every child is in the set");
-            *count -= 1;
-            if *count == 0 {
-                eligible.insert(child);
-            }
-        }
-    }
-    if order.len() != ids.len() {
-        return Err(
-            "the commit range is not acyclic; Git printed an inconsistent history".to_owned(),
-        );
-    }
-
-    // Changes against the first parent, or the empty tree for a root.
-    let empty_tree = empty_tree(&git)?;
-    let mut remaining_changes = limits.history_changes;
-    let mut commits = Vec::with_capacity(order.len());
-    for id in order {
-        let raw = objects.remove(id).expect("read above");
-        let basis = raw.parents.first().cloned();
-        let listing = budget.listing(
-            &git,
-            &[
-                "diff-tree",
-                "-r",
-                "-z",
-                "--raw",
-                "--full-index",
-                "--no-renames",
-                "--no-color",
-                "--ignore-submodules=none",
-                basis.as_ref().unwrap_or(&empty_tree).as_str(),
-                id.as_str(),
-            ],
-            &format!("the changes of commit {id}"),
-        )?;
-        let changes = parse_changes(&listing, &location.prefix)
-            .map_err(|problem| format!("commit {id}: {problem}"))?;
-        remaining_changes = remaining_changes
-            .checked_sub(changes.len())
-            .ok_or_else(|| {
-                format!(
-                    "the range changes more than `limits.history_changes` = {} path(s)",
-                    limits.history_changes
-                )
-            })?;
-        commits.push(Commit {
-            key: id.to_string(),
-            id: Some(id.clone()),
-            pending: false,
-            tree: Some(raw.tree),
-            parents: raw.parents,
-            author: raw.author,
-            committer: Some(raw.committer),
-            message: raw.message,
-            changes,
-            change_basis: basis,
-        });
-    }
-
     let (policy_tree, tree_id) = GitTree::revision(root, head_id.as_str())
         .map_err(|error| format!("cannot read the head tree: {error}"))?;
     let source = SourceInfo {
@@ -420,22 +294,206 @@ pub fn range(
         tree: Some(tree_id.to_string()),
         digest: policy_tree.digest().to_owned(),
     };
-    Ok(Captured {
-        history: History {
-            mode: Mode::Range,
-            base: base.zip(base_id).map(|(revision, id)| Reference {
-                revision: revision.to_owned(),
-                id,
-            }),
-            head: Some(Reference {
-                revision: head.to_owned(),
-                id: head_id,
-            }),
-            commits,
-        },
+    Ok(Opened {
+        git,
+        prefix: location.prefix,
+        mode: Mode::Range,
+        base,
+        head: Some(Reference {
+            revision: head.to_owned(),
+            id: head_id,
+        }),
+        snapshot: None,
+        message_file: None,
         policy_tree,
         source,
     })
+}
+
+/// Open a pending commit: capture the index once, as the policy tree and
+/// as the source of the staged changes.
+pub fn pending(root: &Path, message_file: &Path) -> Result<Opened, String> {
+    let git = Git::new(root).map_err(|error| error.to_string())?;
+    let location = git.locate().map_err(|error| error.to_string())?;
+    let snapshot = IndexSnapshot::capture(&git).map_err(|error| error.to_string())?;
+    let policy_tree = GitTree::index_from(&git, &snapshot)
+        .map_err(|error| format!("cannot read the Git index: {error}"))?;
+    let source = SourceInfo {
+        kind: "index".to_owned(),
+        revision: None,
+        tree: None,
+        digest: policy_tree.digest().to_owned(),
+    };
+    Ok(Opened {
+        git,
+        prefix: location.prefix,
+        mode: Mode::Message,
+        base: None,
+        head: None,
+        snapshot: Some(snapshot),
+        message_file: Some(message_file.to_path_buf()),
+        policy_tree,
+        source,
+    })
+}
+
+impl Opened {
+    /// Read the facts under `limits`. The policy tree stays available
+    /// afterwards; a pending commit's index snapshot is released.
+    pub fn capture(&mut self, limits: &Limits) -> Result<History, String> {
+        match self.mode {
+            Mode::Range => self.capture_range(limits),
+            Mode::Message => self.capture_pending(limits),
+        }
+    }
+
+    /// The commits reachable from the head but not from the base.
+    fn capture_range(&self, limits: &Limits) -> Result<History, String> {
+        let git = &self.git;
+        let head = self.head.as_ref().expect("a range has a head");
+        let head_id = &head.id;
+        let base_id = self.base.as_ref().map(|base| &base.id);
+        let mut budget = Budget::new(limits);
+        let shallow = shallow_boundaries(git, &mut budget)?;
+        // The set: Git reachability, one listing, bounded by the commit limit
+        // plus one so that an over-limit range is detected without listing
+        // everything reachable.
+        let max_count = limits.history_commits.saturating_add(1).to_string();
+        let mut args = vec!["rev-list", "--max-count", &max_count, head_id.as_str()];
+        let excluded = base_id.map(|id| format!("^{id}"));
+        if let Some(excluded) = &excluded {
+            args.push(excluded);
+        }
+        let listing = budget.listing(git, &args, "the commit range")?;
+        let listing = String::from_utf8(listing)
+            .map_err(|_| "git rev-list printed invalid UTF-8".to_owned())?;
+        let mut ids = Vec::new();
+        for line in listing.lines() {
+            ids.push(ObjectId::parse(line.trim())?);
+        }
+        if ids.len() > limits.history_commits {
+            return Err(format!(
+                "the range holds more than `limits.history_commits` = {} commit(s)",
+                limits.history_commits
+            ));
+        }
+        let in_set: BTreeSet<&ObjectId> = ids.iter().collect();
+        for id in &ids {
+            if shallow.contains(id) {
+                return Err(format!(
+                    "commit {id} is a shallow boundary: the history reachable from `{}` is incomplete in this repository; deepen the clone or give a base above the boundary",
+                    head.revision
+                ));
+            }
+        }
+
+        // Raw commit objects, each rejected from its announced size before it
+        // is loaded.
+        let mut objects: HashMap<ObjectId, RawCommit> = HashMap::new();
+        if !ids.is_empty() {
+            let mut batch = Batch::spawn(git, "--batch")
+                .map_err(|error| git::spawn_error(&error).to_string())?;
+            for id in &ids {
+                let raw = read_commit(&mut batch, id, limits, &mut budget)?;
+                objects.insert(id.clone(), raw);
+            }
+        }
+
+        // Oldest first: a commit is eligible once every parent inside the set
+        // is emitted; the smallest identity among the eligible goes first.
+        let mut pending_parents: BTreeMap<&ObjectId, usize> = BTreeMap::new();
+        let mut children: HashMap<&ObjectId, Vec<&ObjectId>> = HashMap::new();
+        for id in &ids {
+            let parents = &objects[id].parents;
+            let inside = parents
+                .iter()
+                .filter(|parent| in_set.contains(parent))
+                .count();
+            pending_parents.insert(id, inside);
+            for parent in parents {
+                if let Some(parent) = in_set.get(parent) {
+                    children.entry(parent).or_default().push(id);
+                }
+            }
+        }
+        let mut eligible: BTreeSet<&ObjectId> = pending_parents
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut order: Vec<&ObjectId> = Vec::with_capacity(ids.len());
+        while let Some(next) = eligible.pop_first() {
+            order.push(next);
+            for child in children.get(next).into_iter().flatten() {
+                let count = pending_parents
+                    .get_mut(child)
+                    .expect("every child is in the set");
+                *count -= 1;
+                if *count == 0 {
+                    eligible.insert(child);
+                }
+            }
+        }
+        if order.len() != ids.len() {
+            return Err(
+                "the commit range is not acyclic; Git printed an inconsistent history".to_owned(),
+            );
+        }
+
+        // Changes against the first parent, or the empty tree for a root.
+        let empty_tree = empty_tree(git)?;
+        let mut remaining_changes = limits.history_changes;
+        let mut commits = Vec::with_capacity(order.len());
+        for id in order {
+            let raw = objects.remove(id).expect("read above");
+            let basis = raw.parents.first().cloned();
+            let listing = budget.listing(
+                git,
+                &[
+                    "diff-tree",
+                    "-r",
+                    "-z",
+                    "--raw",
+                    "--full-index",
+                    "--no-renames",
+                    "--no-color",
+                    "--ignore-submodules=none",
+                    basis.as_ref().unwrap_or(&empty_tree).as_str(),
+                    id.as_str(),
+                ],
+                &format!("the changes of commit {id}"),
+            )?;
+            let changes = parse_changes(&listing, &self.prefix)
+                .map_err(|problem| format!("commit {id}: {problem}"))?;
+            remaining_changes = remaining_changes
+                .checked_sub(changes.len())
+                .ok_or_else(|| {
+                    format!(
+                        "the range changes more than `limits.history_changes` = {} path(s)",
+                        limits.history_changes
+                    )
+                })?;
+            commits.push(Commit {
+                key: id.to_string(),
+                id: Some(id.clone()),
+                pending: false,
+                tree: Some(raw.tree),
+                parents: raw.parents,
+                author: raw.author,
+                committer: Some(raw.committer),
+                message: raw.message,
+                changes,
+                change_basis: basis,
+            });
+        }
+
+        Ok(History {
+            mode: Mode::Range,
+            base: self.base.clone(),
+            head: self.head.clone(),
+            commits,
+        })
+    }
 }
 
 /// The commits at which this repository's history is cut off, from the
@@ -732,135 +790,132 @@ fn parse_changes(listing: &[u8], prefix: &[u8]) -> Result<Vec<Change>, String> {
     Ok(changes)
 }
 
-/// Capture the pending commit a `commit-msg` hook is about to make: the
-/// message at `message_file`, the author Git would use, the parents, and
-/// the staged changes, all from one captured index that also serves as
-/// the policy tree.
-pub fn pending(root: &Path, message_file: &Path, limits: &Limits) -> Result<Captured, String> {
-    let git = Git::new(root).map_err(|error| error.to_string())?;
-    let location = git.locate().map_err(|error| error.to_string())?;
-    let mut budget = Budget::new(limits);
-
-    // The message: exactly the named file, a regular file inside this
-    // repository's own Git directory, bounded before it is read.
-    let git_dir = std::fs::canonicalize(
-        git.line(&["rev-parse", "--absolute-git-dir"])
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("cannot resolve the Git directory: {error}"))?;
-    let message_file = if message_file.is_absolute() {
-        message_file.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| format!("cannot resolve the message file: {error}"))?
-            .join(message_file)
-    };
-    let shown = message_file.display().to_string();
-    let metadata = std::fs::symlink_metadata(&message_file)
-        .map_err(|error| format!("cannot read the message file `{shown}`: {error}"))?;
-    if metadata.is_symlink() {
-        return Err(format!(
-            "the message file `{shown}` is a symbolic link; the message is read only from a regular file"
-        ));
-    }
-    if !metadata.is_file() {
-        return Err(format!("the message file `{shown}` is not a regular file"));
-    }
-    let canonical = std::fs::canonicalize(&message_file)
-        .map_err(|error| format!("cannot resolve the message file `{shown}`: {error}"))?;
-    if !canonical.starts_with(&git_dir) {
-        return Err(format!(
-            "the message file `{shown}` lies outside the repository's Git directory {}",
-            git_dir.display()
-        ));
-    }
-    if metadata.len() > limits.history_commit_bytes {
-        return Err(format!(
-            "the message file `{shown}` is {} bytes, above `limits.history_commit_bytes` = {}",
-            metadata.len(),
-            limits.history_commit_bytes
-        ));
-    }
-    let limit =
-        usize::try_from(limits.history_commit_bytes.min(budget.remaining)).unwrap_or(usize::MAX);
-    let bytes = read_file_within(&canonical, limit, &format!("the message file `{shown}`"))?;
-    budget.charge(bytes.len() as u64, "the message file")?;
-    if bytes.contains(&0) {
-        return Err(format!("the message file `{shown}` contains a NUL byte"));
-    }
-    let message = String::from_utf8(bytes)
-        .map_err(|_| format!("the message file `{shown}` is not valid UTF-8"))?;
-
-    // One captured index: the policy tree and the staged changes.
-    let snapshot = IndexSnapshot::capture(&git).map_err(|error| error.to_string())?;
-    let policy_tree = GitTree::index_from(&git, &snapshot)
-        .map_err(|error| format!("cannot read the Git index: {error}"))?;
-    let frozen = git.with_index(snapshot.path());
-    let head = match git.line(&["rev-parse", "--verify", "-q", "HEAD^{commit}"]) {
-        Ok(text) => Some(ObjectId::parse(&text)?),
-        Err(_) => None,
-    };
-    let basis = match &head {
-        Some(head) => git
-            .line(&["rev-parse", "--verify", "-q", &format!("{head}^{{tree}}")])
-            .map_err(|error| error.to_string())
-            .and_then(|text| ObjectId::parse(&text))?,
-        None => empty_tree(&git)?,
-    };
-    let listing = budget.listing(
-        &frozen,
-        &[
-            "diff-index",
-            "--cached",
-            "-z",
-            "--raw",
-            "--full-index",
-            "--no-renames",
-            "--no-color",
-            "--ignore-submodules=none",
-            "--ita-invisible-in-index",
-            basis.as_str(),
-        ],
-        "the staged changes",
-    )?;
-    drop(snapshot);
-    let changes = parse_changes(&listing, &location.prefix)
-        .map_err(|problem| format!("the pending commit: {problem}"))?;
-    if changes.len() > limits.history_changes {
-        return Err(format!(
-            "the pending commit changes more than `limits.history_changes` = {} path(s)",
-            limits.history_changes
-        ));
-    }
-
-    // Parents: HEAD, then every MERGE_HEAD of a merge in progress.
-    let mut parents = Vec::new();
-    parents.extend(head.clone());
-    let merge_head = git_path(&git, "MERGE_HEAD")?;
-    if std::fs::symlink_metadata(&merge_head).is_ok_and(|metadata| metadata.is_file()) {
-        let bytes = read_file_within(&merge_head, budget.listing_limit(), "MERGE_HEAD")?;
-        budget.charge(bytes.len() as u64, "MERGE_HEAD")?;
-        let text =
-            String::from_utf8(bytes).map_err(|_| "MERGE_HEAD is not valid UTF-8".to_owned())?;
-        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            parents.push(ObjectId::parse(line)?);
+impl Opened {
+    /// The pending commit: the message at the named file, the author Git
+    /// would use, the parents, and the staged changes of the captured
+    /// index.
+    fn capture_pending(&mut self, limits: &Limits) -> Result<History, String> {
+        let git = &self.git;
+        let message_file = self
+            .message_file
+            .as_deref()
+            .expect("a pending commit has a message file");
+        let snapshot = self
+            .snapshot
+            .take()
+            .expect("a pending commit has a snapshot");
+        let mut budget = Budget::new(limits);
+        // The message: exactly the named file, a regular file inside this
+        // repository's own Git directory, bounded before it is read.
+        let git_dir = std::fs::canonicalize(
+            git.line(&["rev-parse", "--absolute-git-dir"])
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("cannot resolve the Git directory: {error}"))?;
+        let message_file = if message_file.is_absolute() {
+            message_file.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|error| format!("cannot resolve the message file: {error}"))?
+                .join(message_file)
+        };
+        let shown = message_file.display().to_string();
+        let metadata = std::fs::symlink_metadata(&message_file)
+            .map_err(|error| format!("cannot read the message file `{shown}`: {error}"))?;
+        if metadata.is_symlink() {
+            return Err(format!(
+                "the message file `{shown}` is a symbolic link; the message is read only from a regular file"
+            ));
         }
-    }
+        if !metadata.is_file() {
+            return Err(format!("the message file `{shown}` is not a regular file"));
+        }
+        let canonical = std::fs::canonicalize(&message_file)
+            .map_err(|error| format!("cannot resolve the message file `{shown}`: {error}"))?;
+        if !canonical.starts_with(&git_dir) {
+            return Err(format!(
+                "the message file `{shown}` lies outside the repository's Git directory {}",
+                git_dir.display()
+            ));
+        }
+        if metadata.len() > limits.history_commit_bytes {
+            return Err(format!(
+                "the message file `{shown}` is {} bytes, above `limits.history_commit_bytes` = {}",
+                metadata.len(),
+                limits.history_commit_bytes
+            ));
+        }
+        let limit = usize::try_from(limits.history_commit_bytes.min(budget.remaining))
+            .unwrap_or(usize::MAX);
+        let bytes = read_file_within(&canonical, limit, &format!("the message file `{shown}`"))?;
+        budget.charge(bytes.len() as u64, "the message file")?;
+        if bytes.contains(&0) {
+            return Err(format!("the message file `{shown}` contains a NUL byte"));
+        }
+        let message = String::from_utf8(bytes)
+            .map_err(|_| format!("the message file `{shown}` is not valid UTF-8"))?;
 
-    // The author Git would record, from the same hardened environment.
-    let author = git
-        .line(&["var", "GIT_AUTHOR_IDENT"])
-        .map_err(|error| format!("cannot determine the pending author: {error}"))?;
-    let author = parse_identity(&author).map_err(|problem| format!("pending author {problem}"))?;
+        // The staged changes of the captured index against HEAD's tree, or
+        // the empty tree on an unborn branch.
+        let frozen = git.with_index(snapshot.path());
+        let head = match git.line(&["rev-parse", "--verify", "-q", "HEAD^{commit}"]) {
+            Ok(text) => Some(ObjectId::parse(&text)?),
+            Err(_) => None,
+        };
+        let basis = match &head {
+            Some(head) => git
+                .line(&["rev-parse", "--verify", "-q", &format!("{head}^{{tree}}")])
+                .map_err(|error| error.to_string())
+                .and_then(|text| ObjectId::parse(&text))?,
+            None => empty_tree(git)?,
+        };
+        let listing = budget.listing(
+            &frozen,
+            &[
+                "diff-index",
+                "--cached",
+                "-z",
+                "--raw",
+                "--full-index",
+                "--no-renames",
+                "--no-color",
+                "--ignore-submodules=none",
+                "--ita-invisible-in-index",
+                basis.as_str(),
+            ],
+            "the staged changes",
+        )?;
+        let changes = parse_changes(&listing, &self.prefix)
+            .map_err(|problem| format!("the pending commit: {problem}"))?;
+        if changes.len() > limits.history_changes {
+            return Err(format!(
+                "the pending commit changes more than `limits.history_changes` = {} path(s)",
+                limits.history_changes
+            ));
+        }
 
-    let source = SourceInfo {
-        kind: "index".to_owned(),
-        revision: None,
-        tree: None,
-        digest: policy_tree.digest().to_owned(),
-    };
-    Ok(Captured {
-        history: History {
+        // Parents: HEAD, then every MERGE_HEAD of a merge in progress.
+        let mut parents = Vec::new();
+        parents.extend(head.clone());
+        let merge_head = git_path(git, "MERGE_HEAD")?;
+        if std::fs::symlink_metadata(&merge_head).is_ok_and(|metadata| metadata.is_file()) {
+            let bytes = read_file_within(&merge_head, budget.listing_limit(), "MERGE_HEAD")?;
+            budget.charge(bytes.len() as u64, "MERGE_HEAD")?;
+            let text =
+                String::from_utf8(bytes).map_err(|_| "MERGE_HEAD is not valid UTF-8".to_owned())?;
+            for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                parents.push(ObjectId::parse(line)?);
+            }
+        }
+
+        // The author Git would record, from the same hardened environment.
+        let author = git
+            .line(&["var", "GIT_AUTHOR_IDENT"])
+            .map_err(|error| format!("cannot determine the pending author: {error}"))?;
+        let author =
+            parse_identity(&author).map_err(|problem| format!("pending author {problem}"))?;
+
+        Ok(History {
             mode: Mode::Message,
             base: None,
             head: None,
@@ -876,10 +931,8 @@ pub fn pending(root: &Path, message_file: &Path, limits: &Limits) -> Result<Capt
                 changes,
                 change_basis: head,
             }],
-        },
-        policy_tree,
-        source,
-    })
+        })
+    }
 }
 
 #[cfg(test)]

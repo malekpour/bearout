@@ -62,6 +62,8 @@ pub struct Policy {
     pub checks: Vec<(String, OwnedFrozenValue)>,
     /// Registered generators in registration order.
     pub generators: Vec<(String, OwnedFrozenValue)>,
+    /// Registered history checks in registration order. Experimental.
+    pub history_checks: Vec<(String, OwnedFrozenValue)>,
     /// The entry module path.
     pub entry: ProjectPath,
     limits: Limits,
@@ -185,10 +187,17 @@ pub fn load(
         .iter()
         .map(|(name, slot)| (name.clone(), fetch(slot)))
         .collect();
+    let history_checks = registry
+        .history_checks
+        .borrow()
+        .iter()
+        .map(|(name, slot)| (name.clone(), fetch(slot)))
+        .collect();
     Some(Policy {
         schemas,
         checks,
         generators,
+        history_checks,
         entry: bootstrap.entry.clone(),
         limits: bootstrap.limits,
         cancel,
@@ -215,6 +224,15 @@ impl Policy {
         project: &OwnedFrozenValue,
     ) -> CallOutcome<Vec<Finding>> {
         self.call(callback, project, findings)
+    }
+
+    /// Call a history check with the history view.
+    pub fn history(
+        &self,
+        callback: &OwnedFrozenValue,
+        history: &OwnedFrozenValue,
+    ) -> CallOutcome<Vec<Finding>> {
+        self.call(callback, history, findings)
     }
 
     /// Call a generator with the project view.

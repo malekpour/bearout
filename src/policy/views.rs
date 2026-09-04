@@ -123,6 +123,15 @@ impl Views {
     }
 }
 
+/// One frozen Starlark value built from JSON, for views that stand alone.
+pub fn freeze_json(value: &Value) -> Result<OwnedFrozenValue, String> {
+    let frozen = Module::with_temp_heap(|module| {
+        module.set("view", alloc_json(module.heap(), value)?);
+        module.freeze().map_err(|error| format!("{error:?}"))
+    })?;
+    frozen.get("view").map_err(|error| error.to_string())
+}
+
 /// Convert JSON to a Starlark value. A number that fits neither `i64` nor
 /// `f64` is an error rather than a substituted value.
 fn alloc_json<'v>(heap: Heap<'v>, value: &Value) -> Result<StarlarkValue<'v>, String> {

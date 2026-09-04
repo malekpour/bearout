@@ -75,6 +75,10 @@ pub enum Code {
     FormatterFailed,
     /// A formatting write was refused or failed.
     FormatWrite,
+    /// An error reported by a repository history check.
+    HistoryError,
+    /// A warning reported by a repository history check.
+    HistoryWarning,
 }
 
 impl Code {
@@ -113,6 +117,8 @@ impl Code {
             Self::FormatDifference => "B029",
             Self::FormatterFailed => "B030",
             Self::FormatWrite => "B031",
+            Self::HistoryError => "B032",
+            Self::HistoryWarning => "B033",
         }
     }
 
@@ -120,13 +126,15 @@ impl Code {
     #[must_use]
     pub const fn severity(self) -> Severity {
         match self {
-            Self::PolicyWarning | Self::ScriptOutput | Self::ScriptLint => Severity::Warning,
+            Self::PolicyWarning | Self::ScriptOutput | Self::ScriptLint | Self::HistoryWarning => {
+                Severity::Warning
+            }
             _ => Severity::Error,
         }
     }
 
     /// Every code, in catalog order.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 33] = [
         Self::Unreadable,
         Self::Envelope,
         Self::SchemaIdentity,
@@ -158,6 +166,8 @@ impl Code {
         Self::FormatDifference,
         Self::FormatterFailed,
         Self::FormatWrite,
+        Self::HistoryError,
+        Self::HistoryWarning,
     ];
 }
 

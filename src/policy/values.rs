@@ -48,10 +48,14 @@ mod host_types {
         /// `true` when the target lives in the comparison baseline rather
         /// than the candidate.
         pub baseline: bool,
-        /// One-based line in that resource or document, when given.
+        /// One-based line in that resource, document, or commit message,
+        /// when given.
         pub line: Option<u32>,
         /// Repository-owned rule identifier, when given.
         pub rule: Option<String>,
+        /// The key of the commit a history finding is about, when given.
+        /// Exclusive with `resource`, `path`, and the baseline side.
+        pub commit: Option<String>,
     }
 
     starlark_simple_value!(Finding);
@@ -84,6 +88,8 @@ mod host_types {
         pub checks: RefCell<Vec<(String, String)>>,
         /// `(name, module variable)`.
         pub generators: RefCell<Vec<(String, String)>>,
+        /// `(name, module variable)`.
+        pub history_checks: RefCell<Vec<(String, String)>>,
         counter: RefCell<u32>,
     }
 
@@ -125,6 +131,7 @@ fn fail(message: String) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!(message))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finding(
     is_error: bool,
     message: &str,
@@ -133,10 +140,22 @@ fn finding(
     side: &str,
     line: NoneOr<i32>,
     code: NoneOr<&str>,
+    commit: NoneOr<&str>,
 ) -> starlark::Result<Finding> {
     if message.trim().is_empty() {
         return Err(fail("finding message must not be empty".to_owned()));
     }
+    let commit = match commit {
+        NoneOr::None => None,
+        NoneOr::Other(key) => {
+            if key.is_empty() || key.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                return Err(fail(
+                    "finding commit must be a commit key of the history view".to_owned(),
+                ));
+            }
+            Some(key.to_owned())
+        }
+    };
     let baseline = match side {
         "candidate" => false,
         "baseline" => true,
@@ -169,6 +188,12 @@ fn finding(
             "a finding names either a `resource` or a `path`, not both".to_owned(),
         ));
     }
+    if commit.is_some() && (resource.is_some() || path.is_some() || baseline) {
+        return Err(fail(
+            "a finding that names a `commit` names neither a `resource`, a `path`, nor the baseline side"
+                .to_owned(),
+        ));
+    }
     let line = match line {
         NoneOr::None => None,
         NoneOr::Other(line) => Some(
@@ -197,15 +222,18 @@ fn finding(
         baseline,
         line,
         rule,
+        commit,
     })
 }
 
 /// Functions available to every module: the finding and output constructors.
 #[starlark_module]
 pub fn library(builder: &mut GlobalsBuilder) {
-    /// Report an error about a resource or a schema-less document.
-    /// `resource` defaults to the resource being validated; project checks
-    /// must name a `resource` or a document `path`.
+    /// Report an error about a resource, a schema-less document, or, from
+    /// a history check, a commit. `resource` defaults to the resource
+    /// being validated; project checks must name a `resource` or a
+    /// document `path`; history checks may name a `commit` key or nothing
+    /// for a range-wide finding.
     fn error(
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named, default = NoneOr::None)] resource: NoneOr<&str>,
@@ -213,11 +241,13 @@ pub fn library(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = "candidate")] side: &str,
         #[starlark(require = named, default = NoneOr::None)] line: NoneOr<i32>,
         #[starlark(require = named, default = NoneOr::None)] code: NoneOr<&str>,
+        #[starlark(require = named, default = NoneOr::None)] commit: NoneOr<&str>,
     ) -> starlark::Result<Finding> {
-        finding(true, message, resource, path, side, line, code)
+        finding(true, message, resource, path, side, line, code, commit)
     }
 
-    /// Report a warning about a resource or a schema-less document.
+    /// Report a warning about a resource, a schema-less document, or,
+    /// from a history check, a commit.
     fn warning(
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named, default = NoneOr::None)] resource: NoneOr<&str>,
@@ -225,8 +255,9 @@ pub fn library(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = "candidate")] side: &str,
         #[starlark(require = named, default = NoneOr::None)] line: NoneOr<i32>,
         #[starlark(require = named, default = NoneOr::None)] code: NoneOr<&str>,
+        #[starlark(require = named, default = NoneOr::None)] commit: NoneOr<&str>,
     ) -> starlark::Result<Finding> {
-        finding(false, message, resource, path, side, line, code)
+        finding(false, message, resource, path, side, line, code, commit)
     }
 
     /// Plan one generated file: render `template` to `path` with `context`.
@@ -270,7 +301,7 @@ fn registry<'a>(eval: &Evaluator<'_, 'a, '_>) -> starlark::Result<&'a Registry> 
         .and_then(|extra| extra.downcast_ref::<Registry>())
         .ok_or_else(|| {
             fail(
-                "schema(), check(), and generator() may only be called from the entry module"
+                "schema(), check(), generator(), and history_check() may only be called from the entry module"
                     .to_owned(),
             )
         })
@@ -383,6 +414,33 @@ pub fn registration(builder: &mut GlobalsBuilder) {
         eval.module().set(&slot, function);
         registry
             .generators
+            .borrow_mut()
+            .push((name.to_owned(), slot));
+        Ok(NoneType)
+    }
+
+    /// Register a history check: a function of one history view, run only
+    /// by `bearout history` and history fixture cases. **Experimental.**
+    fn history_check<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = pos)] function: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        identity::check_kind(name).map_err(|error| fail(format!("history check name: {error}")))?;
+        require_callable(function, "history check function")?;
+        let registry = registry(eval)?;
+        if registry
+            .history_checks
+            .borrow()
+            .iter()
+            .any(|(existing, _)| existing == name)
+        {
+            return Err(fail(format!("history check `{name}` is registered twice")));
+        }
+        let slot = registry.next_slot("history");
+        eval.module().set(&slot, function);
+        registry
+            .history_checks
             .borrow_mut()
             .push((name.to_owned(), slot));
         Ok(NoneType)

@@ -53,6 +53,9 @@ pub use bootstrap::{Bootstrap, Limits, MANIFEST_NAME, STATE_NAME};
 pub use fixture::matching::Expectation;
 pub use fixture::{CaseResult, Matching, Outcome, TestReport};
 pub use generate::Mode;
+pub use history::{
+    HistoryDiagnostic, HistoryMode, HistoryReport, Resolved, Target as HistoryTarget,
+};
 pub use paths::ProjectPath;
 pub use report::{Code, Diagnostic, Report, Severity, Side, SourceInfo};
 
@@ -173,6 +176,16 @@ pub fn generate(root: &Path, mode: Mode) -> Report {
 #[must_use]
 pub fn test(root: &Path, options: &Options) -> TestReport {
     fixture::run(root, options)
+}
+
+/// Run the history checks the project at `root` registers over a commit
+/// range or a pending commit. The policy is read from the resolved head
+/// or the captured index, never from the working tree; only history
+/// checks run. `Options::source` and `Options::baseline` must be their
+/// defaults. **Experimental.**
+#[must_use]
+pub fn history(root: &Path, mode: &HistoryMode, options: &Options) -> HistoryReport {
+    history::run(root, mode, options)
 }
 
 /// The tree a run reads, opened before anything else is read.
@@ -685,6 +698,9 @@ fn admit(
 ) -> Diagnostic {
     let reject =
         |error: String| Diagnostic::new(C::ScriptResult, script, format!("{label} {error}"));
+    if finding.commit.is_some() {
+        return reject("a finding may name a `commit` only from a history check".to_owned());
+    }
     let side = if finding.baseline {
         Side::Baseline
     } else {
