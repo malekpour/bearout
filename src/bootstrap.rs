@@ -55,6 +55,17 @@ pub struct Limits {
     /// Maximum total bytes of fixture files and payloads read for one
     /// suite. Experimental.
     pub fixture_bytes: u64,
+    /// Maximum commits one history run inspects. Experimental.
+    pub history_commits: usize,
+    /// Maximum changed paths across every commit of one history run.
+    /// Experimental.
+    pub history_changes: usize,
+    /// Maximum size of one commit object, headers and message together,
+    /// or of a pending message file. Experimental.
+    pub history_commit_bytes: u64,
+    /// Maximum total bytes read for history facts in one run: commit
+    /// objects, listings, and the pending message. Experimental.
+    pub history_bytes: u64,
 }
 
 impl Default for Limits {
@@ -85,6 +96,10 @@ impl Default for Limits {
             fixture_cases: 200,
             fixture_mutations: 2_000,
             fixture_bytes: 16 * 1024 * 1024,
+            history_commits: 10_000,
+            history_changes: 100_000,
+            history_commit_bytes: 64 * 1024,
+            history_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -632,7 +647,7 @@ fn parse_formatter(table: &Table, index: usize) -> Result<Formatter, String> {
 }
 
 fn parse_limits(limits: &Table) -> Result<Limits, String> {
-    const KEYS: [&str; 15] = [
+    const KEYS: [&str; 19] = [
         "ticks",
         "heap_bytes",
         "call_stack",
@@ -648,6 +663,10 @@ fn parse_limits(limits: &Table) -> Result<Limits, String> {
         "fixture_cases",
         "fixture_mutations",
         "fixture_bytes",
+        "history_commits",
+        "history_changes",
+        "history_commit_bytes",
+        "history_bytes",
     ];
     reject_unknown(limits, "limits", &KEYS)?;
     let mut result = Limits::default();
@@ -712,6 +731,20 @@ fn parse_limits(limits: &Table) -> Result<Limits, String> {
     }
     if let Some(value) = positive("fixture_bytes")? {
         result.fixture_bytes = value;
+    }
+    if let Some(value) = positive("history_commits")? {
+        result.history_commits = usize::try_from(value)
+            .map_err(|_| "`limits.history_commits` is too large".to_owned())?;
+    }
+    if let Some(value) = positive("history_changes")? {
+        result.history_changes = usize::try_from(value)
+            .map_err(|_| "`limits.history_changes` is too large".to_owned())?;
+    }
+    if let Some(value) = positive("history_commit_bytes")? {
+        result.history_commit_bytes = value;
+    }
+    if let Some(value) = positive("history_bytes")? {
+        result.history_bytes = value;
     }
     Ok(result)
 }
@@ -1125,6 +1158,13 @@ mod tests {
                 "limits.fixture_mutations",
             ),
             ("[limits]\nfixture_bytes = 0\n", "limits.fixture_bytes"),
+            ("[limits]\nhistory_commits = 0\n", "limits.history_commits"),
+            ("[limits]\nhistory_changes = -2\n", "limits.history_changes"),
+            (
+                "[limits]\nhistory_commit_bytes = 0\n",
+                "limits.history_commit_bytes",
+            ),
+            ("[limits]\nhistory_bytes = 0\n", "limits.history_bytes"),
         ];
         for (body, expected) in cases {
             let error = parse(&format!("{MINIMAL}{body}")).unwrap_err();

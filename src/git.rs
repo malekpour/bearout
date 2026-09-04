@@ -61,7 +61,7 @@ use crate::paths::ProjectPath;
 use crate::tree::ReadTree;
 
 /// Largest listing (`ls-files`, `ls-tree`, `diff-index`) accepted from Git.
-const MAX_LISTING_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_LISTING_BYTES: usize = 256 * 1024 * 1024;
 /// Largest blob read from Git.
 const MAX_BLOB_BYTES: u64 = 256 * 1024 * 1024;
 /// Bytes of a Git error stream retained for a diagnostic.
@@ -225,10 +225,10 @@ const ROOT_ENTRY: Entry = Entry {
 };
 
 /// Where the project lives inside its repository.
-struct Location {
+pub(crate) struct Location {
     /// Repository-relative prefix of the project root, with a trailing `/`
     /// unless the project is the repository root.
-    prefix: Vec<u8>,
+    pub(crate) prefix: Vec<u8>,
 }
 
 /// The fixed way Bearout runs Git: the `git` executable, an argument
@@ -241,13 +241,13 @@ struct Location {
 /// directory, so that a partial-commit hook sees the index being committed
 /// while a stale, foreign, or redirected value is ignored.
 #[derive(Clone)]
-struct Git {
+pub(crate) struct Git {
     root: PathBuf,
     index_file: Option<OsString>,
 }
 
 impl Git {
-    fn new(root: &Path) -> Result<Self, GitError> {
+    pub(crate) fn new(root: &Path) -> Result<Self, GitError> {
         let metadata = std::fs::metadata(root).map_err(|error| {
             GitError(format!("cannot open project {}: {error}", root.display()))
         })?;
@@ -286,8 +286,13 @@ impl Git {
         (canonical.parent() == Some(git_dir.as_path())).then(|| canonical.into_os_string())
     }
 
+    /// The project root Git runs in.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// The same repository, reading the index at `path` instead.
-    fn with_index(&self, path: &Path) -> Self {
+    pub(crate) fn with_index(&self, path: &Path) -> Self {
         Self {
             root: self.root.clone(),
             index_file: Some(path.as_os_str().to_owned()),
@@ -314,9 +319,18 @@ impl Git {
         command
     }
 
-    /// Run one command and return its standard output, bounded. A non-zero
-    /// exit is an error carrying a sanitized excerpt of standard error.
-    fn output(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+    /// Run one command and return its standard output, bounded by the
+    /// listing limit. A non-zero exit is an error carrying a sanitized
+    /// excerpt of standard error.
+    pub(crate) fn output(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+        self.output_within(args, MAX_LISTING_BYTES)
+    }
+
+    /// Run one command and return its standard output, reading no more
+    /// than `limit` bytes plus one probe byte: an output past the limit
+    /// kills the child and is an error, so nothing larger is ever held.
+    pub(crate) fn output_within(&self, args: &[&str], limit: usize) -> Result<Vec<u8>, GitError> {
+        let limit = limit.min(MAX_LISTING_BYTES);
         let mut child = self
             .command(args)
             .spawn()
@@ -331,12 +345,9 @@ impl Git {
         let stderr = child.stderr.take().expect("stderr is piped");
         let stderr_reader = std::thread::spawn(move || read_bounded(stderr, MAX_STDERR_BYTES));
         let stdout = child.stdout.take().expect("stdout is piped");
-        let output = match read_bounded(stdout, MAX_LISTING_BYTES) {
+        let output = match read_bounded(stdout, limit) {
             Ok((output, false)) => Ok(output),
-            Ok((_, true)) => Err(format!(
-                "git {} produced more than {MAX_LISTING_BYTES} bytes",
-                args[0]
-            )),
+            Ok((_, true)) => Err(format!("git {} produced more than {limit} bytes", args[0])),
             Err(error) => Err(format!(
                 "cannot read the output of git {}: {error}",
                 args[0]
@@ -371,14 +382,14 @@ impl Git {
 
     /// The command's standard output as text with one trailing newline
     /// removed.
-    fn line(&self, args: &[&str]) -> Result<String, GitError> {
+    pub(crate) fn line(&self, args: &[&str]) -> Result<String, GitError> {
         let output = self.output(args)?;
         let text = String::from_utf8(output)
             .map_err(|_| GitError(format!("git {} printed invalid UTF-8", args[0])))?;
         Ok(text.trim_end_matches(['\n', '\r']).to_owned())
     }
 
-    fn locate(&self) -> Result<Location, GitError> {
+    pub(crate) fn locate(&self) -> Result<Location, GitError> {
         let output = self.output(&["rev-parse", "--is-inside-work-tree", "--show-prefix"])?;
         let mut lines = output.split(|byte| *byte == b'\n');
         let inside = lines.next().unwrap_or_default();
@@ -397,13 +408,13 @@ impl Git {
         Ok(Location { prefix })
     }
 
-    fn object_type(&self, object: &ObjectId) -> Result<String, GitError> {
+    pub(crate) fn object_type(&self, object: &ObjectId) -> Result<String, GitError> {
         self.line(&["cat-file", "-t", object.as_str()])
     }
 
     /// The tree Git would compare the index against: `HEAD`'s tree, or the
     /// empty tree on an unborn branch.
-    fn comparison_base(&self) -> Result<ObjectId, GitError> {
+    pub(crate) fn comparison_base(&self) -> Result<ObjectId, GitError> {
         let head = self.line(&["rev-parse", "--verify", "-q", "HEAD^{tree}"]);
         let text = match head {
             Ok(text) => text,
@@ -413,7 +424,7 @@ impl Git {
     }
 }
 
-fn spawn_error(error: &io::Error) -> GitError {
+pub(crate) fn spawn_error(error: &io::Error) -> GitError {
     if error.kind() == io::ErrorKind::NotFound {
         GitError(
             "git is not installed or not on PATH; the index and revision sources require Git"
@@ -425,7 +436,7 @@ fn spawn_error(error: &io::Error) -> GitError {
 }
 
 /// Read up to `limit` bytes. The flag reports whether more were available.
-fn read_bounded(reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
+pub(crate) fn read_bounded(reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
     let mut buffer = Vec::new();
     reader.take(limit as u64 + 1).read_to_end(&mut buffer)?;
     if buffer.len() > limit {
@@ -440,13 +451,13 @@ fn read_bounded(reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> 
 /// reads the same bytes. Git treats a nonexistent index file as empty, so
 /// a repository without an index yields a path that does not exist. The
 /// copy is removed on drop.
-struct IndexSnapshot {
+pub(crate) struct IndexSnapshot {
     path: PathBuf,
     created: bool,
 }
 
 impl IndexSnapshot {
-    fn capture(git: &Git) -> Result<Self, GitError> {
+    pub(crate) fn capture(git: &Git) -> Result<Self, GitError> {
         let source = PathBuf::from(git.line(&["rev-parse", "--git-path", "index"])?);
         let source = if source.is_absolute() {
             source
@@ -512,7 +523,7 @@ impl IndexSnapshot {
         ))
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -755,7 +766,7 @@ impl Entries {
 
 /// Parse a raw Git path into a project path. On failure, return the longest
 /// valid leading directory together with the problem.
-fn parse_git_path(raw: &[u8]) -> Result<ProjectPath, (ProjectPath, String)> {
+pub(crate) fn parse_git_path(raw: &[u8]) -> Result<ProjectPath, (ProjectPath, String)> {
     let mut valid = ProjectPath::root();
     let text = match std::str::from_utf8(raw) {
         Ok(text) => text,
@@ -809,14 +820,14 @@ struct Blobs {
 }
 
 /// One `cat-file --batch` or `--batch-check` process.
-struct Batch {
+pub(crate) struct Batch {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    pub(crate) stdout: BufReader<ChildStdout>,
 }
 
 impl Batch {
-    fn spawn(git: &Git, flag: &str) -> io::Result<Self> {
+    pub(crate) fn spawn(git: &Git, flag: &str) -> io::Result<Self> {
         let mut command = git.command(&["cat-file", flag]);
         command.stdin(Stdio::piped()).stderr(Stdio::null());
         let mut child = command.spawn()?;
@@ -830,7 +841,7 @@ impl Batch {
     }
 
     /// Send one identity and read the header line: `<object> <type> <size>`.
-    fn header(&mut self, object: &ObjectId) -> io::Result<(String, u64)> {
+    pub(crate) fn header(&mut self, object: &ObjectId) -> io::Result<(String, u64)> {
         self.stdin.write_all(object.as_str().as_bytes())?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
@@ -1020,10 +1031,18 @@ impl GitTree {
     /// semantics; the capture fails on an unmerged entry.
     pub fn index(root: &Path) -> Result<Self, GitError> {
         let git = Git::new(root)?;
-        let location = git.locate()?;
         // Every listing below reads one private copy of the index, so the
         // entries and the intent-to-add classification describe one state.
         let snapshot = IndexSnapshot::capture(&git)?;
+        let tree = Self::index_from(&git, &snapshot)?;
+        drop(snapshot);
+        Ok(tree)
+    }
+
+    /// Capture the index from an already taken snapshot, so that a caller
+    /// listing other facts from the same snapshot reads one state.
+    pub(crate) fn index_from(git: &Git, snapshot: &IndexSnapshot) -> Result<Self, GitError> {
+        let location = git.locate()?;
         let frozen = git.with_index(snapshot.path());
         let listing = frozen.output(&["ls-files", "--stage", "-z", "--full-name", "--", "."])?;
         let records = parse_ls_files(&listing).map_err(GitError)?;
@@ -1103,8 +1122,7 @@ impl GitTree {
                 )
                 .map_err(|error| GitError(format!("the index is inconsistent: {error}")))?;
         }
-        drop(snapshot);
-        Ok(Self::from_entries(git, entries))
+        Ok(Self::from_entries(git.clone(), entries))
     }
 
     /// Capture one revision of the repository owning `root`, restricted to

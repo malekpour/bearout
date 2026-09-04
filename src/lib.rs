@@ -30,6 +30,7 @@ mod fs;
 mod generate;
 mod git;
 mod graph;
+mod history;
 mod hygiene;
 mod identity;
 mod markdown;
