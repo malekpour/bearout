@@ -57,7 +57,15 @@ pub enum HistoryMode {
 pub fn run(root: &Path, mode: &HistoryMode, options: &Options) -> HistoryReport {
     match run_inner(root, mode, options) {
         Ok(report) => report,
-        Err(message) => HistoryReport::fatal(message),
+        Err(message) => HistoryReport {
+            mode: match mode {
+                HistoryMode::Range { .. } => Mode::Range,
+                HistoryMode::Message { .. } => Mode::Message,
+            }
+            .as_str()
+            .to_owned(),
+            ..HistoryReport::fatal(message)
+        },
     }
 }
 

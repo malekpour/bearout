@@ -873,3 +873,391 @@ fn test_takes_no_baseline_and_documents_itself() {
     assert!(project.path().join("bearout.star").exists());
     assert_eq!(project.git(&["status", "--porcelain"]), "");
 }
+
+// ---- history --------------------------------------------------------------
+
+/// A committed project whose policy requires a `type: subject` header and
+/// a `Signed-off-by` line naming the author, both as sample rules of the
+/// test, never of the kernel.
+fn history_project() -> Project {
+    let project = Project::new();
+    project.file("content/.keep", "");
+    project.file("rules/.keep", "");
+    project.file(
+        common::ENTRY,
+        "def commit_policy(history):\n    findings = []\n    for commit in history[\"commits\"]:\n        if commit[\"merge\"]:\n            continue\n        subject = commit[\"subject\"]\n        if \": \" not in subject or subject.split(\": \")[0] not in [\"feat\", \"fix\", \"chore\"]:\n            findings.append(error(\"subject must be `<type>: <summary>`\", commit = commit[\"key\"], line = 1, code = \"header\"))\n        author = commit[\"author\"]\n        expected = \"Signed-off-by: %s <%s>\" % (author[\"name\"], author[\"email\"])\n        if expected not in commit[\"message\"].split(\"\\n\"):\n            findings.append(error(\"missing `%s`\" % expected, commit = commit[\"key\"], code = \"sign-off\"))\n    return findings\nhistory_check(\"commit-policy\", commit_policy)\n",
+    );
+    project.git_init();
+    project.git(&["config", "user.name", "Test"]);
+    project.git(&["config", "user.email", "test@example.invalid"]);
+    project.git(&["add", "-A", "."]);
+    project.git(&[
+        "commit",
+        "-q",
+        "-m",
+        "chore: initial\n\nSigned-off-by: Test <test@example.invalid>",
+    ]);
+    project
+}
+
+#[test]
+fn history_exit_codes_and_output_cover_every_outcome() {
+    let project = history_project();
+    let path = project.path().to_str().expect("utf-8 path");
+    let base = project.git(&["rev-parse", "HEAD"]);
+    project.file("a.txt", "a\n");
+    project.git(&["add", "a.txt"]);
+    project.git(&[
+        "commit",
+        "-q",
+        "-m",
+        "feat: add a\n\nSigned-off-by: Test <test@example.invalid>",
+    ]);
+    let good = project.git(&["rev-parse", "HEAD"]);
+
+    // Clean range: 0, summary on stdout.
+    let (code, stdout, stderr) = bearout(&["history", "range", path, "--base", &base]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "checked 1 commit(s): clean\n");
+    assert!(stderr.is_empty());
+    let (code, stdout, _) = bearout(&["history", "range", path]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "checked 2 commit(s): clean\n");
+    let (code, stdout, _) = bearout(&[
+        "--format", "json", "history", "range", path, "--base", &base, "--head", "HEAD",
+    ]);
+    assert_eq!(code, 0);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["mode"], "range");
+    assert_eq!(json["commits"], 1);
+    assert_eq!(json["base"]["revision"], base);
+    assert_eq!(json["head"]["revision"], "HEAD");
+    assert_eq!(json["head"]["id"], good);
+    assert_eq!(json["source"]["kind"], "revision");
+    assert!(json["fatal"].is_null());
+    assert_eq!(
+        stdout,
+        bearout(&[
+            "--format", "json", "history", "range", path, "--base", &base, "--head", "HEAD"
+        ])
+        .1
+    );
+
+    // Findings: 1, one line each on stderr, summary on stderr.
+    project.file("b.txt", "b\n");
+    project.git(&["add", "b.txt"]);
+    project.git(&["commit", "-q", "-m", "added b without ceremony"]);
+    let bad = project.git(&["rev-parse", "HEAD"]);
+    let (code, stdout, stderr) = bearout(&["history", "range", path, "--base", &base]);
+    assert_eq!(code, 1);
+    assert!(stdout.is_empty());
+    assert_eq!(
+        stderr,
+        format!(
+            "commit {bad}:B032[sign-off]: history check `commit-policy`: missing `Signed-off-by: Test <test@example.invalid>`\ncommit {bad}:1:B032[header]: history check `commit-policy`: subject must be `<type>: <summary>`\nchecked 2 commit(s): 2 finding(s)\n"
+        )
+    );
+    assert_eq!(
+        (code, stdout, stderr.clone()),
+        bearout(&["history", "range", path, "--base", &base]),
+        "byte-identical text"
+    );
+    let (code, stdout, _) = bearout(&[
+        "--format", "json", "history", "range", path, "--base", &base,
+    ]);
+    assert_eq!(code, 1);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["diagnostics"][0]["commit"], bad);
+    assert_eq!(json["diagnostics"][0]["code"], "B032");
+    assert_eq!(json["diagnostics"][0]["rule"], "sign-off");
+    assert_eq!(json["diagnostics"][1]["line"], 1);
+    assert!(json["diagnostics"][1].get("path").is_none());
+
+    // Fatal: 2, the reason on stderr, valid JSON.
+    let (code, stdout, stderr) = bearout(&["history", "range", path, "--base", "nope"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert_eq!(
+        stderr,
+        "bearout: `nope` is not a revision of this repository\n"
+    );
+    let (code, stdout, _) = bearout(&[
+        "--format", "json", "history", "range", path, "--head", "--evil",
+    ]);
+    assert_eq!(
+        code, 2,
+        "a hyphen-led revision is an invocation error or a clean refusal"
+    );
+    if !stdout.is_empty() {
+        let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+        assert_eq!(json["ok"], false);
+    }
+    let (code, stdout, _) = bearout(&[
+        "--format",
+        "json",
+        "history",
+        "range",
+        path,
+        "--head=--evil",
+    ]);
+    assert_eq!(code, 2);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert!(
+        json["fatal"]
+            .as_str()
+            .unwrap()
+            .contains("is not a revision name")
+    );
+    let empty = tempfile::tempdir().expect("dir");
+    let (code, stdout, _) = bearout(&[
+        "--format",
+        "json",
+        "history",
+        "range",
+        empty.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert!(
+        json["fatal"]
+            .as_str()
+            .unwrap()
+            .contains("not a git repository")
+    );
+    assert_eq!(
+        json["mode"], "range",
+        "the mode is known even when the facts are not"
+    );
+
+    // Pending message: the hook path.
+    let git_dir = project.git(&["rev-parse", "--absolute-git-dir"]);
+    let file = std::path::Path::new(&git_dir).join("COMMIT_EDITMSG");
+    std::fs::write(
+        &file,
+        "fix: pending\n\nSigned-off-by: Hook Author <hook@example.test>\n",
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bearout"));
+    command
+        .args(["history", "message", path, "--file", file.to_str().unwrap()])
+        .env("GIT_AUTHOR_NAME", "Hook Author")
+        .env("GIT_AUTHOR_EMAIL", "hook@example.test")
+        .env("GIT_AUTHOR_DATE", "1700000000 +0100");
+    let output = command.output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "checked the pending commit: clean\n"
+    );
+    std::fs::write(&file, "no header here\n").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bearout"));
+    command
+        .args([
+            "--format",
+            "json",
+            "history",
+            "message",
+            path,
+            "--file",
+            file.to_str().unwrap(),
+        ])
+        .env("GIT_AUTHOR_NAME", "Hook Author")
+        .env("GIT_AUTHOR_EMAIL", "hook@example.test");
+    let output = command.output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid json");
+    assert_eq!(json["mode"], "message");
+    assert_eq!(json["commits"], 1);
+    assert_eq!(json["source"]["kind"], "index");
+    assert!(json.get("head").is_none() && json.get("base").is_none());
+    assert_eq!(json["diagnostics"][0]["commit"], "pending");
+    assert_eq!(json["diagnostics"][0]["rule"], "sign-off");
+    assert!(
+        json["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Hook Author <hook@example.test>")
+    );
+    assert_eq!(json["diagnostics"][1]["rule"], "header");
+    assert_eq!(json["diagnostics"][1]["line"], 1);
+    let (code, stdout, stderr) = bearout(&[
+        "history",
+        "message",
+        path,
+        "--file",
+        "/nonexistent/COMMIT_EDITMSG",
+    ]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.starts_with("bearout: cannot read the message file"));
+    let (code, stdout, _) = bearout(&[
+        "--format",
+        "json",
+        "history",
+        "message",
+        path,
+        "--file",
+        "/nonexistent/COMMIT_EDITMSG",
+    ]);
+    assert_eq!(code, 2);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["commits"], 0);
+
+    // Invocation errors and help.
+    let (code, _, stderr) = bearout(&["history", "range", "--index", path]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("--index"));
+    let (code, _, _) = bearout(&["history", "message", path]);
+    assert_eq!(code, 2, "--file is required");
+    let (code, _, _) = bearout(&["history", path]);
+    assert_eq!(code, 2, "a mode is required");
+    let (code, stdout, _) = bearout(&["history", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("range") && stdout.contains("message"));
+    let (code, stdout, _) = bearout(&["history", "range", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--base <REV>") && stdout.contains("--head <REV>"));
+    assert!(stdout.contains("resolved once"));
+    let (code, stdout, _) = bearout(&["history", "message", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--file <FILE>") && stdout.contains("commit-msg"));
+}
+
+#[test]
+fn history_facts_survive_hostile_environments_and_replacement_refs() {
+    let project = history_project();
+    let path = project.path().to_str().expect("utf-8 path");
+    let base = project.git(&["rev-parse", "HEAD"]);
+    project.file("a.txt", "a\n");
+    project.git(&["add", "a.txt"]);
+    project.git(&["commit", "-q", "-m", "not conventional at all"]);
+    let head = project.git(&["rev-parse", "HEAD"]);
+    // A replacement object with a conforming message: plain Git shows it,
+    // Bearout reads the original.
+    project.file("a.txt", "replacement\n");
+    project.git(&["add", "a.txt"]);
+    project.git(&[
+        "commit",
+        "-q",
+        "-m",
+        "feat: replacement\n\nSigned-off-by: Test <test@example.invalid>",
+    ]);
+    let replacement = project.git(&["rev-parse", "HEAD"]);
+    project.git(&["replace", &head, &replacement]);
+    project.git(&["update-ref", "refs/heads/main", &head]);
+    assert_eq!(
+        project.git(&["log", "-1", "--format=%s", "main"]),
+        "feat: replacement",
+        "plain Git follows the replacement"
+    );
+    let (code, _, stderr) = bearout(&["history", "range", path, "--base", &base, "--head", "main"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains(&format!("commit {head}:1:B032[header]")));
+    let (_, stdout, _) = bearout(&[
+        "--format", "json", "history", "range", path, "--base", &base, "--head", "main",
+    ]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["head"]["id"], head);
+
+    // Hostile variables cannot redirect the repository, and provider
+    // variables are never read.
+    let other = committed_project();
+    let bogus = tempfile::tempdir().expect("bogus");
+    let global = bogus.path().join("gitconfig");
+    std::fs::write(&global, "[core]\n\tbare = true\n[diff]\n\trenames = true\n").expect("config");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bearout"));
+    command
+        .args([
+            "--format", "json", "history", "range", path, "--base", &base, "--head", "main",
+        ])
+        .env("GIT_DIR", other.git(&["rev-parse", "--absolute-git-dir"]))
+        .env("GIT_WORK_TREE", other.path())
+        .env("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"))
+        .env("GIT_REPLACE_REF_BASE", "refs/replace/")
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .env("GIT_CONFIG_PARAMETERS", "'core.bare=true'")
+        .env("GIT_TRACE", bogus.path().join("trace").to_str().unwrap())
+        .env("BASE", "nonsense")
+        .env("HEAD", "nonsense")
+        .env("GITHUB_BASE_REF", "nonsense")
+        .env("CI_MERGE_REQUEST_DIFF_BASE_SHA", "nonsense");
+    let output = command.output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["head"]["id"], head);
+    assert_eq!(json["commits"], 1);
+    assert!(!bogus.path().join("trace").exists());
+}
+
+#[test]
+fn a_valid_alternate_index_is_honoured_and_a_foreign_one_ignored() {
+    let project = history_project();
+    let path = project.path().to_str().expect("utf-8 path");
+    let git_dir = project.git(&["rev-parse", "--absolute-git-dir"]);
+    let file = std::path::Path::new(&git_dir).join("COMMIT_EDITMSG");
+    std::fs::write(
+        &file,
+        "feat: partial\n\nSigned-off-by: Test <test@example.invalid>\n",
+    )
+    .unwrap();
+    // A partial-commit index inside the repository's own Git directory
+    // holds a stricter policy; the real index does not.
+    let temp_index = std::path::Path::new(&git_dir).join("bearout-partial-index");
+    std::fs::copy(std::path::Path::new(&git_dir).join("index"), &temp_index).unwrap();
+    project.file(
+        common::ENTRY,
+        "history_check(\"strict\", lambda h: [error(\"alternate index policy\", commit = \"pending\")])\n",
+    );
+    let status = common::git_command(project.path())
+        .env("GIT_INDEX_FILE", &temp_index)
+        .args(["add", common::ENTRY])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let run = |index: Option<&std::path::Path>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bearout"));
+        command
+            .args(["history", "message", path, "--file", file.to_str().unwrap()])
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid");
+        if let Some(index) = index {
+            command.env("GIT_INDEX_FILE", index);
+        }
+        let output = command.output().unwrap();
+        (
+            output.status.code().unwrap(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let (code, stderr) = run(None);
+    assert_eq!(code, 0, "{stderr}");
+    let (code, stderr) = run(Some(&temp_index));
+    assert_eq!(code, 1);
+    assert!(stderr.contains("alternate index policy"));
+    // A foreign repository's index, and a link, are ignored.
+    let other = committed_project();
+    let other_index =
+        std::path::PathBuf::from(other.git(&["rev-parse", "--absolute-git-dir"])).join("index");
+    let (code, stderr) = run(Some(&other_index));
+    assert_eq!(code, 0, "{stderr}");
+    #[cfg(unix)]
+    {
+        let link = std::path::Path::new(&git_dir).join("linked-index");
+        std::os::unix::fs::symlink(&temp_index, &link).unwrap();
+        let (code, _) = run(Some(&link));
+        assert_eq!(code, 0);
+    }
+}

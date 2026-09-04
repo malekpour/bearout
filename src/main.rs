@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bearout::{Command, Mode, Options, Report, Source, TestReport};
+use bearout::{Command, HistoryMode, HistoryReport, Mode, Options, Report, Source, TestReport};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -105,6 +105,46 @@ enum Subcommands {
         #[command(flatten)]
         source: TreeArgs,
     },
+    /// Run the repository's history checks over Git commits: a commit
+    /// range for CI, or the pending commit for a commit-msg hook. The
+    /// policy is read from the resolved head or the captured index, never
+    /// from the working tree; only history checks run. Experimental.
+    History {
+        #[command(subcommand)]
+        mode: HistoryCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HistoryCommands {
+    /// Check the commits reachable from --head but not from --base; every
+    /// commit reachable from --head without a base. Names are resolved
+    /// once; the base itself is excluded; merges are included. Nothing is
+    /// read from the environment: name the revisions explicitly.
+    Range {
+        /// Project directory containing bearout.toml.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// The revision whose commits are excluded, resolved once.
+        #[arg(long, value_name = "REV")]
+        base: Option<String>,
+        /// The revision to check, resolved once. Defaults to HEAD.
+        #[arg(long, value_name = "REV")]
+        head: Option<String>,
+    },
+    /// Check the pending commit a commit-msg hook is about to make: the
+    /// exact message in --file (a regular file inside the repository's
+    /// Git directory), the author Git would record, HEAD and the heads of
+    /// a merge in progress as parents, and the staged changes of the
+    /// captured index, which also supplies the policy.
+    Message {
+        /// Project directory containing bearout.toml.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// The message file, as Git passes it to the commit-msg hook.
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -123,6 +163,22 @@ fn main() -> ExitCode {
                 Format::Json => print_json(&report, report.fatal.is_some(), report.ok),
                 Format::Text => {
                     print_test_text(&report);
+                    exit_code(report.fatal.is_some(), report.ok)
+                }
+            };
+        }
+        Subcommands::History { mode } => {
+            let (path, mode) = match mode {
+                HistoryCommands::Range { path, base, head } => {
+                    (path, HistoryMode::Range { base, head })
+                }
+                HistoryCommands::Message { path, file } => (path, HistoryMode::Message { file }),
+            };
+            let report = bearout::history(&path, &mode, &Options::default());
+            return match cli.format {
+                Format::Json => print_json(&report, report.fatal.is_some(), report.ok),
+                Format::Text => {
+                    print_history_text(&report);
                     exit_code(report.fatal.is_some(), report.ok)
                 }
             };
@@ -181,6 +237,32 @@ fn print_json(report: &impl serde::Serialize, fatal: bool, ok: bool) -> ExitCode
         }
     }
     exit_code(fatal, ok)
+}
+
+/// Findings on standard error, one per line, then a summary: on standard
+/// output when nothing was found, on standard error otherwise. A fatal
+/// run prints only its reason.
+fn print_history_text(report: &HistoryReport) {
+    if let Some(fatal) = &report.fatal {
+        for diagnostic in &report.diagnostics {
+            eprintln!("{diagnostic}");
+        }
+        eprintln!("bearout: {fatal}");
+        return;
+    }
+    for diagnostic in &report.diagnostics {
+        eprintln!("{diagnostic}");
+    }
+    let subject = if report.mode == "message" {
+        "checked the pending commit".to_owned()
+    } else {
+        format!("checked {} commit(s)", report.commits)
+    };
+    if report.ok {
+        println!("{subject}: clean");
+    } else {
+        eprintln!("{subject}: {} finding(s)", report.diagnostics.len());
+    }
 }
 
 /// One line per case on standard output, the details of each failed case
