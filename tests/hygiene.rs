@@ -1200,3 +1200,47 @@ fn formatters_never_see_undecodable_or_unconfigured_files() {
     assert_eq!(project.read("src/weird.txt"), "x\n");
     assert_eq!(project.read("src/broken/c.txt"), "lower\n");
 }
+
+#[test]
+fn repeated_oversized_files_exhaust_the_total_budget() {
+    // Each rejected read still costs its probe (the limit plus one byte),
+    // so oversized files alone can exhaust the total, and the boundary
+    // reached is the one reported.
+    let project = text_project();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nfile_bytes = 100\nhygiene_bytes = 400\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"big\"]")
+        ),
+    );
+    project.remove(".editorconfig");
+    for name in ["a", "b", "c", "d"] {
+        project.file(&format!("big/{name}.txt"), &"x".repeat(150));
+    }
+    // 101 + 101 + 101 = 303 charged; the fourth read is bounded to the 97
+    // bytes left, pulls 98, and the budget is what stops it.
+    assert_fatal(
+        &project.check(),
+        "hygiene inputs exceed `limits.hygiene_bytes` = 400 while reading `big/d.txt`",
+    );
+    // With room for every probe, each file is its own B024 instead.
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nfile_bytes = 100\nhygiene_bytes = 1000\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"big\"]")
+        ),
+    );
+    let report = project.check();
+    assert_eq!(report.errors(), 4);
+    assert!(
+        codes(&report)
+            .iter()
+            .all(|code| *code == bearout::Code::FileUnreadable)
+    );
+    assert_line(
+        &report,
+        "big/a.txt:B024: file is 150 bytes, above `limits.file_bytes` = 100",
+    );
+}

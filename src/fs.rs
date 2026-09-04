@@ -105,9 +105,6 @@ impl ReadTree for WorkingDir {
         let mut bytes = Vec::new();
         file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
         let over = u64::try_from(bytes.len()).is_ok_and(|len| len > limit);
-        if over {
-            bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
-        }
         Ok((bytes, over))
     }
 
@@ -225,7 +222,11 @@ mod tests {
         let big = ProjectPath::parse("big.txt").unwrap();
         let (bytes, over) = working.read_bounded(&big, 100).unwrap();
         assert!(over);
-        assert_eq!(bytes.len(), 100, "truncated to the bound");
+        assert_eq!(
+            bytes.len(),
+            101,
+            "the bound plus one probe byte, nothing more"
+        );
         let (bytes, over) = working.read_bounded(&big, 10_000).unwrap();
         assert!(!over);
         assert_eq!(bytes.len(), 10_000);

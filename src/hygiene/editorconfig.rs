@@ -250,15 +250,8 @@ impl<'a> Resolver<'a> {
                 ));
             }
         }
-        let limit = self.budget.limits().file_bytes;
-        let bytes = match self.tree.read_bounded(file, limit) {
-            Ok((_, true)) => {
-                return Err(report(
-                    super::over_limit(self.tree, file, &format!("`{FILE_NAME}`"), limit),
-                    None,
-                ));
-            }
-            Ok((bytes, false)) => bytes,
+        let (bytes, over) = match self.tree.read_bounded(file, self.budget.read_limit()) {
+            Ok(read) => read,
             Err(error) => {
                 return Err(report(format!("cannot read `{FILE_NAME}`: {error}"), None));
             }
@@ -266,6 +259,13 @@ impl<'a> Resolver<'a> {
         if let Err(message) = self.budget.charge(file.as_str(), bytes.len() as u64) {
             self.fatal.borrow_mut().get_or_insert(message);
             return Err(report("hygiene input budget exhausted".to_owned(), None));
+        }
+        if over {
+            let limit = self.budget.limits().file_bytes;
+            return Err(report(
+                super::over_limit(self.tree, file, &format!("`{FILE_NAME}`"), limit),
+                None,
+            ));
         }
         let mut parser = ConfigParser::new_buffered(Cursor::new(bytes))
             .map_err(|error| report(describe(&error), None))?;

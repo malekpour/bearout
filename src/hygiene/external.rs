@@ -156,24 +156,23 @@ impl Workdir {
                     ));
                 }
             }
-            let bytes = match tree.read_bounded(support, limits.file_bytes) {
-                Ok((_, true)) => {
-                    return Err(super::over_limit(
-                        tree,
-                        support,
-                        &format!("support file `{support}` of formatter `{}`", formatter.name),
-                        limits.file_bytes,
-                    ));
-                }
-                Ok((bytes, false)) => bytes,
-                Err(error) => {
-                    return Err(format!(
+            let (bytes, over) = tree
+                .read_bounded(support, budget.read_limit())
+                .map_err(|error| {
+                    format!(
                         "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
                         formatter.name
-                    ));
-                }
-            };
+                    )
+                })?;
             budget.charge(support.as_str(), bytes.len() as u64)?;
+            if over {
+                return Err(super::over_limit(
+                    tree,
+                    support,
+                    &format!("support file `{support}` of formatter `{}`", formatter.name),
+                    limits.file_bytes,
+                ));
+            }
             let target = workdir.root.join("files").join(support.to_native());
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)

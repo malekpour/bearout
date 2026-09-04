@@ -71,8 +71,9 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Experimental repository hygiene and formatting. An explicit `[hygiene]`
   grant selects files (`scope = "repository"` for every file as Git knows
   it, `scope = "declared"` for listed roots and files, refined by
-  `exclude`, `binary`, and `text`), bounded by `limits.files` and
-  `limits.file_bytes` and confined to the candidate. Native text hygiene
+  `exclude`, `binary`, and `text`), bounded by `limits.files`,
+  `limits.file_bytes`, and `limits.hygiene_bytes` (the total read for
+  hygiene in one run) and confined to the candidate. Native text hygiene
   enforces `charset`, `end_of_line`, `insert_final_newline`, and
   `trim_trailing_whitespace` from the `.editorconfig` files of the
   selected tree (codes B023 to B028). `[[formatters]]` declares

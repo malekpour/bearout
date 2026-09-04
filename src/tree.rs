@@ -38,21 +38,16 @@ pub trait ReadTree: Send + Sync {
     /// The bytes of a regular file.
     fn read(&self, path: &ProjectPath) -> io::Result<Vec<u8>>;
 
-    /// At most `limit + 1` bytes of a regular file, with a flag that is
-    /// `true` when the file holds more than `limit` bytes. Callers that
-    /// enforce a size limit use this rather than a length check followed
-    /// by an unbounded read, so a file that grows between the two cannot
-    /// slip past the limit. The default reads the whole file and truncates,
-    /// which is exact for frozen trees; the live working directory reads
-    /// no more than the bound.
-    fn read_bounded(&self, path: &ProjectPath, limit: u64) -> io::Result<(Vec<u8>, bool)> {
-        let mut bytes = self.read(path)?;
-        let over = u64::try_from(bytes.len()).is_ok_and(|len| len > limit);
-        if over {
-            bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
-        }
-        Ok((bytes, over))
-    }
+    /// The bytes a bounded read of a regular file pulled, and whether the
+    /// file holds more than `limit` bytes. Callers that enforce a size
+    /// limit use this rather than a length check followed by an unbounded
+    /// read, so a file that grows between the two cannot slip past the
+    /// limit. No implementation loads more than `limit + 1` bytes: the
+    /// working directory stops reading there, and a frozen tree rejects an
+    /// over-limit blob from its captured size without loading it. The bytes
+    /// returned are exactly those pulled, including an overflow probe, so a
+    /// caller can account for them.
+    fn read_bounded(&self, path: &ProjectPath, limit: u64) -> io::Result<(Vec<u8>, bool)>;
 
     /// The UTF-8 text of a regular file. Invalid UTF-8 is
     /// [`io::ErrorKind::InvalidData`].

@@ -53,6 +53,13 @@ impl Budget {
         &self.limits
     }
 
+    /// The bound one more read may use: `limits.file_bytes` or the bytes
+    /// left in the budget, whichever is smaller.
+    #[must_use]
+    pub fn read_limit(&self) -> u64 {
+        self.limits.file_bytes.min(self.remaining.get())
+    }
+
     /// Charge `bytes` for reading `what`; exhaustion is fatal.
     pub fn charge(&self, what: &str, bytes: u64) -> Result<(), String> {
         match self.remaining.get().checked_sub(bytes) {
@@ -76,9 +83,10 @@ pub struct Loaded {
 }
 
 /// Read every selected file within `limits.file_bytes` and the run's
-/// budget, reading no more than the limit allows and charging the bytes
-/// actually returned. A file that cannot be read or is too large is B024
-/// and is not returned; an exhausted budget is fatal.
+/// budget. Each read is bounded by the smaller of the two, every byte
+/// pulled is charged, an overflow probe included, and the boundary that
+/// was reached is the one reported: an exhausted budget is fatal, a file
+/// too large or unreadable is B024 and is not returned.
 pub fn load(
     tree: &dyn ReadTree,
     selected: Vec<Selected>,
@@ -89,12 +97,15 @@ pub fn load(
     let mut loaded = Vec::new();
     for entry in selected {
         let path = entry.path.as_str();
-        match tree.read_bounded(&entry.path, limits.file_bytes) {
-            Ok((_, true)) => diagnostics.push(Diagnostic::new(
-                Code::FileUnreadable,
-                path,
-                over_limit(tree, &entry.path, "file", limits.file_bytes),
-            )),
+        match tree.read_bounded(&entry.path, budget.read_limit()) {
+            Ok((pulled, true)) => {
+                budget.charge(path, pulled.len() as u64)?;
+                diagnostics.push(Diagnostic::new(
+                    Code::FileUnreadable,
+                    path,
+                    over_limit(tree, &entry.path, "file", limits.file_bytes),
+                ));
+            }
             Ok((bytes, false)) => {
                 budget.charge(path, bytes.len() as u64)?;
                 loaded.push(Loaded {
@@ -252,6 +263,14 @@ mod tests {
         fn read(&self, _: &ProjectPath) -> io::Result<Vec<u8>> {
             Ok(self.content.clone())
         }
+        fn read_bounded(&self, _: &ProjectPath, limit: u64) -> io::Result<(Vec<u8>, bool)> {
+            let probe = usize::try_from(limit)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1);
+            let pulled = self.content[..self.content.len().min(probe)].to_vec();
+            let over = pulled.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+            Ok((pulled, over))
+        }
         fn file_len(&self, _: &ProjectPath) -> io::Result<u64> {
             Ok(5)
         }
@@ -307,6 +326,23 @@ mod tests {
                 .contains("exceeds `limits.file_bytes` = 100"),
             "{}",
             diagnostics[0].message
+        );
+
+        // A rejected read still charges what it pulled: the probe of one
+        // byte past the limit.
+        let budget_after = Budget::new(&limits);
+        let mut diagnostics = Vec::new();
+        load(
+            &tree,
+            vec![selected("a.txt")],
+            &budget_after,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(
+            budget_after.remaining.get(),
+            limits.hygiene_bytes - 101,
+            "the overflow probe counts toward the budget"
         );
 
         // Within the file limit, the budget is charged with the real size.

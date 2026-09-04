@@ -343,7 +343,14 @@ listed roots and names listed files without Git. `exclude`, `binary`, and
 `text` refine by path prefix, every list is sorted, links are never
 followed, submodules never entered, the project prefix confines
 discovery, and `limits.files` bounds the count. Each selected file is read
-once within `limits.file_bytes`; a file too large or unreadable is B024.
+once, bounded by `limits.file_bytes` and by what remains of
+`limits.hygiene_bytes`, the total for every hygiene input of the run
+(selected files, `.editorconfig` files, and formatter support files
+together), whichever is smaller. Every byte a read pulls is charged, the
+one-byte overflow probe of a rejected read included; a frozen Git tree
+rejects an over-limit blob from its recorded size without loading it. The
+boundary reached is the one reported: a file too large or unreadable is
+B024, and an exhausted total is fatal.
 
 **Text hygiene.** Properties come from `.editorconfig` files of the
 selected tree only, parsed by `ec4rs` from the bytes that tree holds:

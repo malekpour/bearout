@@ -1456,6 +1456,32 @@ impl ReadTree for GitTree {
         }
     }
 
+    fn read_bounded(&self, path: &ProjectPath, limit: u64) -> io::Result<(Vec<u8>, bool)> {
+        let Some((full, entry)) = self.resolve(path)? else {
+            return Err(not_found(path));
+        };
+        match entry.kind {
+            Kind::File | Kind::Executable => {
+                // The captured size decides before any content is loaded;
+                // an over-limit blob pulls nothing.
+                let object = entry.object.as_ref().expect("a file always has a blob");
+                if self.blob_size(entry, object)? > limit {
+                    return Ok((Vec::new(), true));
+                }
+                Ok((self.blob(object)?.to_vec(), false))
+            }
+            Kind::Directory => Err(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                format!("`{path}` is a directory"),
+            )),
+            Kind::Gitlink => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("`{full}` is a submodule; Bearout never reads through submodules"),
+            )),
+            Kind::Symlink => unreachable!("resolution follows links"),
+        }
+    }
+
     fn file_len(&self, path: &ProjectPath) -> io::Result<u64> {
         let Some((_, entry)) = self.resolve(path)? else {
             return Err(not_found(path));
@@ -2138,6 +2164,33 @@ mod repository_tests {
         assert!(error.to_string().contains("git ls-tree failed"), "{error}");
         let error = GitTree::revision(&project, &with).unwrap_err();
         assert!(error.to_string().contains("git ls-tree failed"), "{error}");
+    }
+
+    #[test]
+    fn an_over_limit_blob_is_rejected_without_being_loaded() {
+        let repo = Repo::new();
+        let big = vec![b'x'; 200_000];
+        repo.stage("100644", &big, "docs/big.txt");
+        repo.stage("100644", b"small\n", "docs/small.txt");
+        let tree = GitTree::index(repo.root()).unwrap();
+        let (pulled, over) = tree.read_bounded(&path("docs/big.txt"), 1_000).unwrap();
+        assert!(over);
+        assert!(
+            pulled.is_empty(),
+            "nothing is pulled for an over-limit blob"
+        );
+        {
+            let blobs = tree.captured.blobs.lock().unwrap();
+            assert!(blobs.cache.is_empty(), "the blob never entered the cache");
+            assert!(blobs.contents.is_none(), "no content process was started");
+        }
+        let (pulled, over) = tree.read_bounded(&path("docs/small.txt"), 1_000).unwrap();
+        assert!(!over);
+        assert_eq!(pulled, b"small\n");
+        let (pulled, over) = tree.read_bounded(&path("docs/big.txt"), 200_000).unwrap();
+        assert!(!over);
+        assert_eq!(pulled.len(), 200_000, "exactly at the limit is within it");
+        assert!(tree.read_bounded(&path("docs"), 10).is_err());
     }
 
     #[test]
