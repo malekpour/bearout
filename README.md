@@ -209,6 +209,8 @@ bearout check --index [path]            # check what a commit would record
 bearout check --revision v1.2 [path]    # check one commit, tag, branch, or tree
 bearout generate --check --index [path] # verify outputs as staged
 bearout check --index --baseline HEAD   # and compare with an exact revision
+bearout --allow-formatters check [path] # also run the declared formatters
+bearout --allow-formatters format [path] # rewrite selected files in place
 ```
 
 Diagnostics use stable codes and forward-slash project-relative paths on
@@ -295,6 +297,70 @@ can be named. What is immutable, when, and what may still change is the
 repository's policy, never the kernel's; the
 [`decision-records`](samples/decision-records/) sample shows one such
 rule. The report carries the resolved baseline identity as `baseline`.
+
+## Hygiene and formatting
+
+> [!WARNING]
+> The hygiene grant, the formatter declarations, the `format` command,
+> and the related report fields are experimental.
+
+Bearout natively enforces the byte-level hygiene every text file shares
+and delegates syntax-aware formatting to programs the repository pins. An
+explicit `[hygiene]` grant selects the files: `scope = "repository"` is
+every file of the project as Git knows it (the captured index or revision
+tree; for the working directory the tracked plus untracked, non-ignored
+files), `scope = "declared"` is only the listed `roots` and `files`;
+`exclude`, `binary`, and `text` refine any selection by path, and no
+extension carries kernel meaning. A file is binary when declared so or
+when a NUL byte occurs in its first 8 KiB; binary files are never checked
+or rewritten.
+
+```toml
+[hygiene]
+scope = "repository"
+exclude = ["generated"]
+binary = ["assets"]
+
+[[formatters]]
+name = "python"
+command = ["ruff", "format", "--stdin-filename", "{path}", "-"]
+extensions = ["py"]
+support = ["ruff.toml"]
+```
+
+Text rules come from the `.editorconfig` files of the selected tree,
+never from the live checkout during an index or revision check: `charset`
+(`utf-8` or `utf-8-bom`), `end_of_line`, `insert_final_newline` (exactly
+one final newline; an empty file is exempt and never changed), and
+`trim_trailing_whitespace` (set it to `false` for Markdown hard breaks). A
+value Bearout cannot enforce is reported, not guessed; the supported
+subset is documented in [`docs/design.md`](docs/design.md), and complete
+EditorConfig compatibility is not claimed.
+
+A formatter is a strict byte transform: the selected file's exact bytes go
+to the program on standard input, its standard output is the canonical
+form, and a difference is one diagnostic. The program runs from an
+argument vector with `{path}` replaced by the project-relative path, from
+a private working directory holding only the declared `support` files
+read from the selected tree, without color, sequentially, with bounded
+streams and a timeout. Running formatters needs `--allow-formatters`,
+because a formatter is a trusted host program outside Starlark's
+capability model: Bearout confines what it sees, not what it can do, and
+checking formatter declarations from untrusted authors is not a supported
+security boundary. The formatter's version is an input to
+reproducibility; run Bearout inside the environment that pins it, such as
+`mise exec -- bearout --allow-formatters check`. Bearout never reads
+`mise.toml` and installs nothing. General linting is deferred: linters
+produce tool-specific findings that need a separate design.
+
+`bearout format` rewrites selected files of the working directory after
+computing every change, applying native normalization before the
+formatter, replacing each file atomically with its permissions preserved
+and only if it still holds the bytes that were read, and undoing
+completed replacements if a later one fails. Nothing is created or
+deleted, links are never followed, index and revision sources and
+comparison baselines are never formatted, and `generate` never rewrites
+sources.
 
 ## Samples
 

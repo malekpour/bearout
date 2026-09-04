@@ -317,6 +317,98 @@ documents matter, and what a good link or alt text is, are repository
 decisions: the kernel assigns no meaning to a README, a governance file,
 or any other name.
 
+## Repository hygiene and formatting
+
+Everything here is experimental. The boundary is hybrid: the kernel
+enforces the byte and text hygiene every file shares, because it needs no
+knowledge of a language and must be identical across sources; syntax-aware
+formatting, indentation, wrapping, quoting, and import order belong to
+external programs the repository selects and pins, because embedding one
+language's rules would make the kernel a formatter for that language. No
+extension has kernel meaning; no linter runner exists, since linters emit
+tool-specific findings that need their own design; and Bearout never
+parses `mise.toml` or installs anything. Only the candidate is selected;
+the comparison baseline is neither checked nor formatted, and the
+comparison surface stays what Phase 3 defined.
+
+**Selection.** `[hygiene] scope = "repository"` is every file of the
+project as Git knows it: for a captured index or revision, that tree's
+regular files; for the working directory, the tracked plus untracked,
+non-ignored paths that Git lists through the hardened runner, kept only
+while they exist as regular files, so a tracked file deleted from disk is
+absent. Staged deletions are absent from the index, unstaged edits cannot
+reach it, and untracked files cannot satisfy it. A repository-wide
+selection outside a Git repository is fatal; `scope = "declared"` walks
+listed roots and names listed files without Git. `exclude`, `binary`, and
+`text` refine by path prefix, every list is sorted, links are never
+followed, submodules never entered, the project prefix confines
+discovery, and `limits.files` bounds the count. Each selected file is read
+once within `limits.file_bytes`; a file too large or unreadable is B024.
+
+**Text hygiene.** Properties come from `.editorconfig` files of the
+selected tree only, parsed by `ec4rs` from the bytes that tree holds:
+every file between the project root and the selected file applies, the
+innermost `root = true` ends the search, closer files win, and the project
+root is the outer boundary. The enforced subset is `charset` (`utf-8`,
+`utf-8-bom`), `end_of_line` (`lf`, `crlf`, `cr`), `insert_final_newline`,
+and `trim_trailing_whitespace`; every other property is ignored, and a
+supported property with a value Bearout cannot enforce (`latin1`,
+`utf-16le`, a misspelled value) is B023 on the file rather than a guess.
+An unusable `.editorconfig` is B023 once, on that file, and suspends
+checks beneath it. Bearout's own decisions: a file is binary by
+declaration or when its first 8 KiB contain a NUL, an empty file is text,
+binary files are never checked; a text file must be valid UTF-8 even with
+`charset` unset, because undecodable bytes cannot be checked line by
+line; `insert_final_newline = true` means exactly one final newline, so
+trailing blank lines are violations, and an empty file satisfies either
+setting and never changes. Each aspect is one diagnostic per file naming
+the first line: B025 encoding, B026 line ending, B027 final newline, B028
+trailing whitespace; an encoding failure stops the file's check so nothing
+cascades. Identical bytes give identical diagnostics from every source.
+
+**External formatters.** A `[[formatters]]` entry is an executable plus an
+argument vector, never a shell, with `{path}` replaced by the
+project-relative path; `paths` and `extensions` assign it selected files,
+and a file may have at most one formatter. The protocol is a byte
+transform: the file's exact bytes from the chosen tree on standard input,
+canonical bytes on standard output, B029 when they differ. The program
+runs from a private temporary directory containing only the declared
+`support` files read from the selected tree, so a staged or committed
+configuration governs an index or revision check even when the checkout
+differs; every temporary and cache location it is told about lies outside
+the target repository; it runs non-interactively with color disabled,
+sequentially in path order, with bounded standard input, output, and
+error, and a wall-clock bound after which it is killed and reaped. A
+non-zero exit, timeout, oversized output, or abnormal end is B030 on the
+file; a program that cannot start is fatal. Formatters run only when the
+host authorizes them (`--allow-formatters`, `Options::allow_formatters`);
+declaring them without authorization is fatal rather than silently
+skipped, and nothing about them reaches Starlark.
+
+**Trust boundary.** An authorized formatter is a trusted host program. It
+is not confined by Starlark's capability model, Bearout is not a security
+sandbox, and checking external-tool declarations from untrusted authors
+is not a supported security boundary: Bearout controls what the program
+receives and where it starts, not what it can read or write elsewhere.
+The program's version is an input to reproducibility that Bearout does
+not detect; the repository runs Bearout inside its pinned environment.
+
+**Formatting writes.** `bearout format` is the only operation that
+rewrites user-owned files; `check` and `generate --check` never write, and
+`generate` never rewrites sources. The write requires the working
+directory and refuses a comparison baseline. Every transformation is
+computed first: native normalization in a fixed order (byte-order mark,
+line endings, trailing whitespace, end of file), then the assigned
+formatter over the normalized bytes. Only existing, selected regular files
+change; nothing is created or deleted; a link is never followed or
+replaced; permissions, the executable bit included, are preserved; a
+file is replaced only if it still holds the bytes that were read; each
+replacement is atomic through the working-directory writer; a failure
+part-way undoes completed replacements from a journal, reporting
+restoration failures (B031); and no temporary file remains. The
+generated-output manifest plays no part: the command itself is the
+authorization to change these files.
+
 ## Schema and resource identity
 
 A schema identifier is `<namespace segments>/<kind>@<major>`, lowercase

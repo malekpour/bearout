@@ -102,6 +102,39 @@ needs a fact that two runs, two machines, and two candidate sources agree
 on. Resources keep their identity through their ids, so policy can pair
 a moved record without the kernel guessing.
 
+## Text hygiene: `ec4rs` for EditorConfig
+
+Repositories already declare their common text policy in
+`.editorconfig`, so Bearout reads that rather than inventing a vocabulary.
+Three Rust options were considered: `ec4rs` (a from-scratch
+implementation of the specification, Apache-2.0, no C dependency, small
+dependency tree, able to parse from any reader), `editorconfig-core`
+(FFI bindings to the C library, adding a native build dependency), and
+`editorconfig` (an older crate with less complete matching). `ec4rs` was
+chosen because its parser accepts bytes from a `ReadTree` and its section
+matching applies to a path made relative to the configuration file's
+directory, which is exactly what a source-exact resolver needs: Bearout
+never lets it open files from the live filesystem. Bearout enforces only
+`charset`, `end_of_line`, `insert_final_newline`, and
+`trim_trailing_whitespace`, and says so; it does not claim complete
+EditorConfig compatibility, and a supported property with a value it
+cannot enforce is a diagnostic rather than a guess.
+
+## External formatters: a byte-transform protocol
+
+Syntax-aware formatting is delegated to repository-pinned programs
+through the narrowest protocol formatters commonly support: exact bytes on
+standard input, canonical bytes on standard output, a filename hint as an
+argument. Bearout does not embed any language's formatter, does not parse
+tool-specific diagnostics, and does not run linters; the first would tie
+the kernel to a language, the second and third need a design of their
+own. Programs run from an argument vector in a private working directory
+seeded from the selected tree, with bounded streams and a timeout, and
+only under explicit host authorization, because they are trusted host
+processes rather than confined scripts. Bearout does not read `mise.toml`
+or detect tool versions: the calling repository runs Bearout inside the
+environment that pins its tools.
+
 ## Other components
 
 - `toml_edit` parses the bootstrap, front matter, header-only resources,

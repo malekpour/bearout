@@ -9,7 +9,10 @@ extended dialect (type annotations and f-strings on top of the Starlark
 specification). Scripts receive immutable views and return host values.
 They have no filesystem, environment, network, clock, or random access,
 and they do not learn which source (working directory, Git index, or
-revision) a run reads: the views are the same for every source.
+revision) a run reads: the views are the same for every source. Nor do
+they have process access: the external formatters a repository declares
+run only under host authorization, are never callable from a script, and
+leave no trace in any view.
 
 ## Entry module
 

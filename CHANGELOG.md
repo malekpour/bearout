@@ -68,6 +68,21 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   baseline identity as `baseline`. What is immutable is entirely the
   repository policy's decision; the `decision-records` sample shows one.
 
+- Experimental repository hygiene and formatting. An explicit `[hygiene]`
+  grant selects files (`scope = "repository"` for every file as Git knows
+  it, `scope = "declared"` for listed roots and files, refined by
+  `exclude`, `binary`, and `text`), bounded by `limits.files` and
+  `limits.file_bytes` and confined to the candidate. Native text hygiene
+  enforces `charset`, `end_of_line`, `insert_final_newline`, and
+  `trim_trailing_whitespace` from the `.editorconfig` files of the
+  selected tree (codes B023 to B028). `[[formatters]]` declares
+  repository-pinned programs run through a stdin/stdout byte-transform
+  protocol with `{path}` substitution, support files from the selected
+  tree, bounded streams, and a timeout, only under `--allow-formatters`
+  (codes B029 and B030). `bearout format` rewrites selected working-tree
+  files safely (B031). The report counts selected `files` and lists
+  `formatted` paths.
+
 ### Changed
 
 - Markdown reference checking moved out of the identifier graph; explicit
