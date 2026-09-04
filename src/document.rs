@@ -6,7 +6,7 @@
 //! resources, and a resource never becomes a document: a path selected as
 //! both is processed once, as a resource.
 
-use crate::bootstrap::{Bootstrap, MARKDOWN_EXTENSION};
+use crate::bootstrap::{Bootstrap, Limits, MARKDOWN_EXTENSION};
 use crate::markdown;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
@@ -51,6 +51,7 @@ impl Document {
 pub fn discover(
     tree: &dyn ReadTree,
     bootstrap: &Bootstrap,
+    limits: &Limits,
     resources: &[ProjectPath],
 ) -> Result<Vec<ProjectPath>, String> {
     let mut found = std::collections::BTreeSet::new();
@@ -89,11 +90,11 @@ pub fn discover(
     for resource in resources {
         found.remove(resource);
     }
-    if found.len() > bootstrap.limits.documents {
+    if found.len() > limits.documents {
         return Err(format!(
             "{} documents exceed `limits.documents` = {}",
             found.len(),
-            bootstrap.limits.documents
+            limits.documents
         ));
     }
     Ok(found.into_iter().collect())
@@ -102,7 +103,7 @@ pub fn discover(
 /// Read and parse one document. Every failure is a B022 diagnostic.
 pub fn read(
     tree: &dyn ReadTree,
-    bootstrap: &Bootstrap,
+    limits: &Limits,
     path: &ProjectPath,
 ) -> Result<Document, Diagnostic> {
     let report =
@@ -110,10 +111,10 @@ pub fn read(
     let len = tree
         .file_len(path)
         .map_err(|error| report(format!("cannot read document: {error}")))?;
-    if len > bootstrap.limits.document_bytes {
+    if len > limits.document_bytes {
         return Err(report(format!(
             "document is {len} bytes, above `limits.document_bytes` = {}",
-            bootstrap.limits.document_bytes
+            limits.document_bytes
         )));
     }
     let bytes = tree

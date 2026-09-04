@@ -32,12 +32,13 @@ mod identity;
 mod markdown;
 mod paths;
 mod policy;
+mod projection;
 mod references;
 pub mod report;
 mod shape;
 mod tree;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -47,13 +48,14 @@ use serde_json::Value;
 pub use bootstrap::{Bootstrap, Limits, MANIFEST_NAME, STATE_NAME};
 pub use generate::Mode;
 pub use paths::ProjectPath;
-pub use report::{Code, Diagnostic, Report, Severity, SourceInfo};
+pub use report::{Code, Diagnostic, Report, Severity, Side, SourceInfo};
 
 use envelope::Resource;
 use fs::WorkingDir;
 use git::GitTree;
 use policy::values::Finding;
 use policy::{CallOutcome, Policy};
+use projection::Projection;
 use report::Code as C;
 use shape::Shape;
 use tree::ReadTree;
@@ -217,27 +219,6 @@ impl Opened {
     }
 }
 
-struct Parsed {
-    resource: Resource,
-    valid: bool,
-}
-
-/// An empty resource used to move parsed resources out of their entries.
-fn placeholder() -> Resource {
-    Resource {
-        path: ProjectPath::root(),
-        schema: String::new(),
-        id: String::new(),
-        refs: Vec::new(),
-        fields: Value::Null,
-        field_lines: BTreeMap::new(),
-        body: String::new(),
-        line_count: 0,
-        doc: markdown::Document::default(),
-        fragments: Vec::new(),
-    }
-}
-
 fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report, String> {
     let mut report = Report::default();
     let cancel = options.cancel.clone().unwrap_or_default();
@@ -263,13 +244,7 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         .read_text(&manifest_path)
         .map_err(|error| format!("cannot read {MANIFEST_NAME} in {}: {error}", root.display()))?;
     let bootstrap = bootstrap::parse(&manifest_text)?;
-    for root_path in &bootstrap.resource_roots {
-        if !tree.is_dir(root_path) {
-            return Err(format!(
-                "resource root `{root_path}` is not a directory inside the project"
-            ));
-        }
-    }
+    projection::check_resource_roots(tree, &bootstrap)?;
     if !tree.is_dir(&bootstrap.rules_root) {
         return Err(format!(
             "rules root `{}` is not a directory inside the project",
@@ -290,16 +265,18 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         ));
     }
 
-    // Phase: discovery. Resources first; a path they claim is never also a
-    // schema-less document.
-    let files = discover(tree, &bootstrap)?;
-    report.resources = files.len();
-    let document_paths = document::discover(tree, &bootstrap, &files)?;
-    report.documents = document_paths.len();
-
-    // Phase: parsing.
-    let mut parsed = parse_all(tree, &bootstrap, &files, &mut report);
-    let documents = read_documents(tree, &bootstrap, &document_paths, &mut report);
+    // Phases: discovery and parsing. Resources first; a path they claim is
+    // never also a schema-less document.
+    let mut gathered_diagnostics = Vec::new();
+    let gathered = projection::gather(
+        tree,
+        &bootstrap,
+        &bootstrap.limits,
+        &mut gathered_diagnostics,
+    )?;
+    report.extend(gathered_diagnostics);
+    report.resources = gathered.files.len();
+    report.documents = gathered.document_paths.len();
 
     // Repository policy is loaded before structural validation because the
     // entry module registers the schemas and shapes that validation needs.
@@ -313,45 +290,76 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         return Ok(report);
     };
 
-    // Phase: structural validation.
+    // Phases: structural validation and graph construction. Every parsed
+    // resource defines identifiers; only structurally valid ones have their
+    // relations checked. Markdown references of valid resources and parsed
+    // documents are checked together against the tree and the discovered
+    // Markdown set.
     let shapes = load_shapes(tree, &policy, &mut report);
-    validate_structure(&mut parsed, &policy, &shapes, &mut report);
-
-    // Phase: graph construction. Every parsed resource defines identifiers;
-    // only structurally valid ones have their relations checked. Markdown
-    // references of valid resources and parsed documents are checked
-    // together against the tree and the discovered Markdown set.
-    let resources: Vec<Resource> = parsed
-        .iter_mut()
-        .map(|entry| std::mem::replace(&mut entry.resource, placeholder()))
-        .collect();
-    let validity: Vec<bool> = parsed.iter().map(|entry| entry.valid).collect();
-    let mut graph_diagnostics = Vec::new();
-    let graph = graph::build(&resources, &validity, &shapes, &mut graph_diagnostics);
-    references::check(
+    let mut settled_diagnostics = Vec::new();
+    let candidate = projection::settle(
         tree,
-        &resources,
-        &validity,
-        &files,
-        &documents,
-        &document_paths,
-        &mut graph_diagnostics,
+        gathered,
+        &policy,
+        &shapes,
+        Side::Candidate,
+        &mut settled_diagnostics,
     );
-    report.extend(graph_diagnostics);
-    let valid_indexes: Vec<usize> = validity
-        .iter()
-        .enumerate()
-        .filter(|(_, valid)| **valid)
-        .map(|(index, _)| index)
-        .collect();
+    report.extend(settled_diagnostics);
+
+    // The baseline is projected through the same steps with the candidate's
+    // limits, policy, and shapes, and its own bootstrap selecting its paths.
+    let historical = match &baseline {
+        Some(baseline) => {
+            let mut baseline_diagnostics = Vec::new();
+            let projection = projection::baseline(
+                &baseline.tree,
+                baseline.info.revision.as_deref().unwrap_or_default(),
+                &bootstrap.limits,
+                &policy,
+                &shapes,
+                &mut baseline_diagnostics,
+            )?;
+            report.extend(baseline_diagnostics);
+            Some(projection)
+        }
+        None => None,
+    };
+
+    let Projection {
+        resources,
+        documents,
+        graph,
+        ..
+    } = &candidate;
+    let valid_indexes = candidate.valid_indexes();
     let valid: Vec<&Resource> = valid_indexes
         .iter()
         .map(|index| &resources[*index])
         .collect();
 
     // Phase: repository policy.
-    let views = policy::views::Views::build(&resources, &valid_indexes, &graph, &documents)
-        .map_err(|error| format!("cannot build script views: {error}"))?;
+    let comparison = baseline
+        .as_ref()
+        .zip(historical.as_ref())
+        .map(|(baseline, projection)| policy::views::SideView {
+            info: Some(&baseline.info),
+            resources: &projection.resources,
+            indexes: projection.valid_indexes(),
+            graph: &projection.graph,
+            documents: &projection.documents,
+        });
+    let views = policy::views::Views::build(
+        policy::views::SideView {
+            info: None,
+            resources,
+            indexes: valid_indexes.clone(),
+            graph,
+            documents,
+        },
+        comparison,
+    )
+    .map_err(|error| format!("cannot build script views: {error}"))?;
     let line_counts: BTreeMap<&str, u32> = valid
         .iter()
         .map(|resource| (resource.id.as_str(), resource.line_count))
@@ -415,105 +423,8 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     Ok(report)
 }
 
-fn discover(tree: &dyn ReadTree, bootstrap: &Bootstrap) -> Result<Vec<ProjectPath>, String> {
-    let mut files = Vec::new();
-    for root in &bootstrap.resource_roots {
-        let found = tree
-            .walk(root)
-            .map_err(|error| format!("cannot walk resource root `{root}`: {error}"))?;
-        files.extend(
-            found
-                .into_iter()
-                .filter(|path| matches!(path.extension(), Some("md" | "toml"))),
-        );
-    }
-    files.sort();
-    files.dedup();
-    if files.len() > bootstrap.limits.resources {
-        return Err(format!(
-            "{} resources exceed `limits.resources` = {}",
-            files.len(),
-            bootstrap.limits.resources
-        ));
-    }
-    Ok(files)
-}
-
-fn parse_all(
-    tree: &dyn ReadTree,
-    bootstrap: &Bootstrap,
-    files: &[ProjectPath],
-    report: &mut Report,
-) -> Vec<Parsed> {
-    let mut parsed = Vec::new();
-    for path in files {
-        match tree.file_len(path) {
-            Ok(len) if len > bootstrap.limits.resource_bytes => {
-                report.push(Diagnostic::new(
-                    C::Unreadable,
-                    path.as_str(),
-                    format!(
-                        "resource is {len} bytes, above `limits.resource_bytes` = {}",
-                        bootstrap.limits.resource_bytes
-                    ),
-                ));
-                continue;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                report.push(Diagnostic::new(
-                    C::Unreadable,
-                    path.as_str(),
-                    format!("cannot read resource: {error}"),
-                ));
-                continue;
-            }
-        }
-        let bytes = match tree.read(path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                report.push(Diagnostic::new(
-                    C::Unreadable,
-                    path.as_str(),
-                    format!("cannot read resource: {error}"),
-                ));
-                continue;
-            }
-        };
-        let mut diagnostics = Vec::new();
-        match envelope::parse(path, &bytes, &mut diagnostics) {
-            Ok(resource) => {
-                let valid = diagnostics.is_empty();
-                report.extend(diagnostics);
-                parsed.push(Parsed { resource, valid });
-            }
-            Err(diagnostic) => {
-                report.push(diagnostic);
-                report.extend(diagnostics);
-            }
-        }
-    }
-    parsed
-}
-
 /// Read and parse every registered shape. Like rule modules, shapes are
 /// never reached through a symbolic link.
-fn read_documents(
-    tree: &dyn ReadTree,
-    bootstrap: &Bootstrap,
-    paths: &[ProjectPath],
-    report: &mut Report,
-) -> Vec<document::Document> {
-    let mut documents = Vec::new();
-    for path in paths {
-        match document::read(tree, bootstrap, path) {
-            Ok(document) => documents.push(document),
-            Err(diagnostic) => report.push(diagnostic),
-        }
-    }
-    documents
-}
-
 fn load_shapes(
     tree: &dyn ReadTree,
     policy: &Policy,
@@ -568,109 +479,6 @@ fn load_shapes(
         }
     }
     shapes
-}
-
-/// Validate every parsed resource against its registered schema's shape:
-/// fields, required sections, and fragments. A resource whose schema is
-/// unregistered or whose shape failed to load is not valid.
-fn validate_structure(
-    parsed: &mut [Parsed],
-    policy: &Policy,
-    shapes: &BTreeMap<String, Shape>,
-    report: &mut Report,
-) {
-    let unloadable: BTreeSet<&str> = policy
-        .schemas
-        .iter()
-        .filter(|(id, schema)| schema.shape.is_some() && !shapes.contains_key(*id))
-        .map(|(id, _)| id.as_str())
-        .collect();
-    for entry in parsed.iter_mut() {
-        let resource = &entry.resource;
-        let path = resource.path.as_str();
-        if !policy.schemas.contains_key(&resource.schema) {
-            report.push(Diagnostic::new(
-                C::SchemaIdentity,
-                path,
-                format!(
-                    "schema `{}` is not registered by the policy",
-                    resource.schema
-                ),
-            ));
-            entry.valid = false;
-            continue;
-        }
-        if unloadable.contains(resource.schema.as_str()) {
-            entry.valid = false;
-            continue;
-        }
-        let Some(shape) = shapes.get(&resource.schema) else {
-            continue;
-        };
-        let before = report.diagnostics.len();
-        for violation in shape.check(&resource.fields) {
-            let key = if violation.location.is_empty() {
-                violation.unexpected.as_deref()
-            } else {
-                violation.location.split('.').next()
-            };
-            let line = key.and_then(|key| resource.field_lines.get(key)).copied();
-            report
-                .push(Diagnostic::new(C::ShapeViolation, path, describe(&violation)).at_line(line));
-        }
-        for title in &shape.sections {
-            if !resource
-                .doc
-                .sections
-                .iter()
-                .any(|section| &section.title == title)
-            {
-                report.push(Diagnostic::new(
-                    C::MissingSection,
-                    path,
-                    format!("body must contain a `{title}` section"),
-                ));
-            }
-        }
-        for fragment in &resource.fragments {
-            match shape.check_fragment(&fragment.kind, &fragment.fields) {
-                None => report.push(
-                    Diagnostic::new(
-                        C::FragmentMalformed,
-                        path,
-                        format!(
-                            "fragment kind `{}` is not declared by schema `{}`",
-                            fragment.kind, resource.schema
-                        ),
-                    )
-                    .at_line(Some(fragment.line)),
-                ),
-                Some(violations) => {
-                    for violation in violations {
-                        report.push(
-                            Diagnostic::new(
-                                C::ShapeViolation,
-                                path,
-                                format!("fragment `{}`: {}", fragment.id, describe(&violation)),
-                            )
-                            .at_line(Some(fragment.line)),
-                        );
-                    }
-                }
-            }
-        }
-        if report.diagnostics.len() > before {
-            entry.valid = false;
-        }
-    }
-}
-
-fn describe(violation: &shape::Violation) -> String {
-    if violation.location.is_empty() {
-        violation.message.clone()
-    } else {
-        format!("`{}`: {}", violation.location, violation.message)
-    }
 }
 
 /// What a finding may be admitted against: the structurally valid

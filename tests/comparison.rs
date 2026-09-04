@@ -7,7 +7,7 @@ mod common;
 
 use std::process::Command as Process;
 
-use bearout::{Command, Mode, Options, Source};
+use bearout::{Code, Command, Mode, Options, Source};
 use common::{Project, assert_clean, assert_fatal};
 
 fn options(source: Source, baseline: &str) -> Options {
@@ -217,4 +217,350 @@ fn the_cli_accepts_a_baseline_with_every_candidate() {
     let (code, stdout, _) = run(&["check", "--help"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("--baseline <REV>"));
+}
+
+// ---- historical projection --------------------------------------------------
+
+use common::{assert_line, assert_no_line, codes, lines};
+
+/// The entry module of a check that reports what the comparison view holds.
+const INSPECT: &str = concat!(
+    "def inspect(p):\n",
+    "    c = p[\"comparison\"]\n",
+    "    if c == None:\n",
+    "        return [warning(\"no comparison\", resource = \"note-a\")]\n",
+    "    b = c[\"baseline\"]\n",
+    "    return [warning(\"baseline %s ids %s docs %s\" % (b[\"revision\"], \",\".join(sorted(b[\"by_id\"].keys())), \",\".join([d[\"path\"] for d in b[\"documents\"]])), resource = \"note-a\")]\n",
+    "schema(\"example/test/note@1\", shape = \"note.schema.toml\")\n",
+    "check(\"inspect\", inspect)\n",
+);
+
+fn inspecting_project() -> Project {
+    let project = Project::with_note();
+    project.file(common::ENTRY, INSPECT);
+    project
+}
+
+#[test]
+fn the_comparison_view_is_none_without_a_baseline_and_holds_history_with_one() {
+    let project = inspecting_project();
+    project.git_init();
+    let first = project.commit_all("first");
+    assert_line(
+        &project.check(),
+        "content/note-a.md:B016: check `inspect`: no comparison",
+    );
+
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[documents]\nfiles = [\"NOTES.md\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    project.file("NOTES.md", "# Notes\n");
+    project.file(
+        "content/note-b.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-b\"\ntitle = \"B\"\n+++\n",
+    );
+    let second = project.commit_all("second");
+    project.remove("content/note-a.md");
+    project.file(
+        "content/note-c.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-a\"\ntitle = \"moved\"\n+++\n",
+    );
+
+    // Each side is classified by its own manifest: the first commit selected
+    // no documents and held only note-a; the second holds both notes and
+    // the document. The candidate is what is on disk now.
+    for (source, expected) in [
+        (
+            Source::WorkingDirectory,
+            "baseline main ids note-a,note-b docs NOTES.md",
+        ),
+        (
+            Source::Index,
+            "baseline main ids note-a,note-b docs NOTES.md",
+        ),
+    ] {
+        let report = project.run(Command::Check, &options(source, "main"));
+        assert_clean(&report);
+        assert_line(&report, expected);
+    }
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &first));
+    assert_clean(&report);
+    assert_line(
+        &report,
+        "baseline first-commit ids note-a docs "
+            .replace("first-commit", &first)
+            .as_str(),
+    );
+    assert_line(
+        &project.run(
+            Command::Check,
+            &options(Source::Revision(first.clone()), &second),
+        ),
+        "baseline",
+    );
+    // Identical candidate bytes give the same view whichever source they
+    // come from.
+    let from_working = project.run(Command::Check, &options(Source::WorkingDirectory, &first));
+    project.git(&["add", "-A", "."]);
+    let staged = project.run(Command::Check, &options(Source::Index, &first));
+    assert_eq!(lines(&staged), lines(&from_working));
+    assert_eq!(
+        serde_json::to_string(&staged.baseline).unwrap(),
+        serde_json::to_string(&from_working.baseline).unwrap()
+    );
+}
+
+#[test]
+fn a_missing_historical_manifest_is_an_empty_project_and_a_malformed_one_is_fatal() {
+    let project = inspecting_project();
+    project.git_init();
+    std::fs::remove_file(project.path().join("bearout.toml")).expect("remove");
+    let before = project.commit_all("no manifest");
+    project.file("bearout.toml", common::BOOTSTRAP);
+    project.commit_all("manifest");
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &before));
+    assert_clean(&report);
+    assert_line(&report, &format!("baseline {before} ids  docs "));
+
+    project.file("bearout.toml", "version = 1\nentry = \"bearout.star\"\n[resources]\nroots = [\"content\"]\n[rules]\nroot = \"rules\"\nbogus = 1\n");
+    let broken = project.commit_all("broken manifest");
+    project.file("bearout.toml", common::BOOTSTRAP);
+    project.commit_all("fixed");
+    assert_fatal(
+        &project.run(Command::Check, &options(Source::WorkingDirectory, &broken)),
+        &format!("baseline `{broken}`: bearout.toml is not usable: unknown key `rules.bogus`"),
+    );
+}
+
+#[test]
+fn roots_and_documents_present_on_one_side_only_stay_visible() {
+    let project = inspecting_project();
+    project.file(
+        "bearout.toml",
+        "version = 1\nentry = \"bearout.star\"\n[resources]\nroots = [\"content\", \"archive\"]\n[rules]\nroot = \"rules\"\n[documents]\nfiles = [\"OLD.md\"]\n",
+    );
+    project.file(
+        "archive/note-old.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-old\"\ntitle = \"Old\"\n+++\n",
+    );
+    project.file("OLD.md", "# Old\n");
+    project.git_init();
+    let old = project.commit_all("old layout");
+    // The candidate drops the archive root and the document, and adds a new
+    // root with a new resource and a new document.
+    project.file(
+        "bearout.toml",
+        "version = 1\nentry = \"bearout.star\"\n[resources]\nroots = [\"content\", \"fresh\"]\n[rules]\nroot = \"rules\"\n[documents]\nfiles = [\"NEW.md\"]\n",
+    );
+    std::fs::remove_dir_all(project.path().join("archive")).expect("remove");
+    project.remove("OLD.md");
+    project.file(
+        "fresh/note-new.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-new\"\ntitle = \"New\"\n+++\n",
+    );
+    project.file("NEW.md", "# New\n");
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+    assert_clean(&report);
+    assert_eq!(report.resources, 2);
+    assert_eq!(report.documents, 1);
+    assert_line(
+        &report,
+        &format!("baseline {old} ids note-a,note-old docs OLD.md"),
+    );
+}
+
+#[test]
+fn baseline_problems_are_diagnostics_on_the_baseline_side() {
+    let project = inspecting_project();
+    project.file(
+        "content/note-b.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-b\"\ntitle = \"B\"\nnext = \"note-a\"\n+++\n",
+    );
+    project.file(
+        "content/note-c.md",
+        "+++\nschema = \"example/test/other@1\"\nid = \"note-c\"\ntitle = \"C\"\n+++\n",
+    );
+    project.file(
+        "rules/other.schema.toml",
+        "\"$schema\" = \"https://json-schema.org/draft/2020-12/schema\"\ntype = \"object\"\n",
+    );
+    project.file(
+        common::ENTRY,
+        &format!("{INSPECT}schema(\"example/test/other@1\", shape = \"other.schema.toml\")\n"),
+    );
+    project.git_init();
+    let old = project.commit_all("old");
+
+    // The candidate drops the `other` schema, tightens the note shape so
+    // that `next` is no longer allowed, and duplicates nothing itself.
+    project.file(common::ENTRY, INSPECT);
+    project.remove("rules/other.schema.toml");
+    project.file(
+        "rules/note.schema.toml",
+        &common::NOTE_SHAPE.replace(
+            "[properties.next]\ntype = \"string\"\n\"x-bearout\" = { ref = \"example/test/note@1\" }\n",
+            "",
+        ),
+    );
+    project.remove("content/note-c.md");
+    project.file(
+        "content/note-b.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-b\"\ntitle = \"B\"\n+++\n",
+    );
+    assert_clean(&project.check());
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+    assert!(report.fatal.is_none(), "{:?}", report.fatal);
+    assert_eq!(
+        lines(&report),
+        [
+            "baseline:content/note-b.md:5:B005: Additional properties are not allowed ('next' was unexpected)",
+            "baseline:content/note-c.md:B003: schema `example/test/other@1` is not registered by the current policy; comparison interprets history with the candidate's schemas, so the policy must keep every schema its baseline uses",
+        ]
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| d.side == bearout::Side::Baseline)
+    );
+    let json = serde_json::to_value(&report).expect("json");
+    assert_eq!(json["diagnostics"][0]["side"], "baseline");
+    assert_eq!(json["diagnostics"][0]["path"], "content/note-b.md");
+    assert_eq!(report.errors(), 2, "baseline problems fail the run");
+    assert_no_line(&report, "check `inspect`");
+
+    // A candidate diagnostic carries no side in JSON and no text prefix.
+    let plain = project.check();
+    let json = serde_json::to_value(&plain).expect("json");
+    assert_eq!(json["diagnostics"][0]["code"], "B016");
+    assert!(json["diagnostics"][0].get("side").is_none());
+    assert!(lines(&plain)[0].starts_with("content/note-a.md:"));
+}
+
+#[test]
+fn duplicate_historical_ids_and_unreadable_history_are_reported_on_the_baseline() {
+    let project = inspecting_project();
+    project.file(
+        "content/note-b.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-a\"\ntitle = \"B\"\n+++\n",
+    );
+    project.file("content/note-c.md", "# not a resource\n");
+    project.git_init();
+    let old = project.commit_all("old");
+    project.remove("content/note-b.md");
+    project.remove("content/note-c.md");
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+    assert_eq!(
+        codes(&report),
+        [Code::DuplicateId, Code::DuplicateId, Code::Envelope],
+        "sorted by path within the baseline side"
+    );
+    assert_line(
+        &report,
+        "baseline:content/note-a.md:B008: identifier `note-a` is defined more than once",
+    );
+    assert_line(
+        &report,
+        "baseline:content/note-c.md:B002: resource must begin with TOML front matter",
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| d.side == bearout::Side::Baseline)
+    );
+    // Candidate findings sort before baseline findings.
+    project.file(
+        "content/note-a.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-a\"\ntitle = 3\n+++\n",
+    );
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+    let sides: Vec<bearout::Side> = report.diagnostics.iter().map(|d| d.side).collect();
+    assert_eq!(sides[0], bearout::Side::Candidate);
+    assert!(sides[1..].iter().all(|s| *s == bearout::Side::Baseline));
+    assert!(lines(&report)[0].starts_with("content/note-a.md:4:B005"));
+}
+
+#[test]
+fn baseline_symlinks_and_gitlinks_stay_confined() {
+    let project = inspecting_project();
+    project.git_init();
+    project.commit_all("clean");
+    project.stage_entry("120000", b"note-a.md", "content/alias.md");
+    project.stage_entry("160000", b"", "content/vendor");
+    project.git(&["commit", "-q", "-m", "links"]);
+    let linked = project.git(&["rev-parse", "HEAD"]);
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &linked));
+    assert_clean(&report);
+    assert_line(&report, &format!("baseline {linked} ids note-a docs "));
+
+    // A historical resource root that is a symbolic link is refused, and
+    // the run names the baseline.
+    let object = project.git(&["rev-parse", "HEAD:content/note-a.md"]);
+    project.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{object},real/note-a.md"),
+    ]);
+    project.git(&["rm", "-r", "-q", "--cached", "content"]);
+    project.stage_entry("120000", b"real", "content");
+    project.git(&["commit", "-q", "-m", "linked root"]);
+    let bad = project.git(&["rev-parse", "HEAD"]);
+    assert_fatal(
+        &project.run(Command::Check, &options(Source::WorkingDirectory, &bad)),
+        &format!(
+            "baseline `{bad}`: cannot walk resource root `content`: `content` is a symbolic link"
+        ),
+    );
+}
+
+#[test]
+fn baselines_work_below_the_repository_root_and_in_linked_worktrees() {
+    let project = Project::at("packages/docs");
+    project.file(common::ENTRY, INSPECT);
+    project.file("rules/note.schema.toml", common::NOTE_SHAPE);
+    project.file(
+        "content/note-a.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-a\"\ntitle = \"A\"\n+++\n",
+    );
+    project.git_init();
+    let first = project.commit_all("first");
+    project.file(
+        "content/note-b.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-b\"\ntitle = \"B\"\n+++\n",
+    );
+    project.commit_all("second");
+    let report = project.run(Command::Check, &options(Source::Index, &first));
+    assert_clean(&report);
+    assert_line(&report, &format!("baseline {first} ids note-a docs "));
+
+    let linked = tempfile::tempdir().expect("worktree dir");
+    let linked_path = linked.path().join("wt");
+    project.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "feature",
+        linked_path.to_str().unwrap(),
+    ]);
+    let inside = linked_path.join("packages/docs");
+    std::fs::write(
+        inside.join("content/note-c.md"),
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-c\"\ntitle = \"C\"\n+++\n",
+    )
+    .expect("write");
+    let report = bearout::run(
+        &inside,
+        Command::Check,
+        &options(Source::WorkingDirectory, "main"),
+    );
+    assert_clean(&report);
+    assert_eq!(report.resources, 3);
+    assert_line(&report, "baseline main ids note-a,note-b docs ");
 }

@@ -146,10 +146,34 @@ pub enum Severity {
     Warning,
 }
 
-/// One deterministic finding. Ordering is by path, code, line, rule, and
-/// message, which is also the order of the report.
+/// Which tree a diagnostic or finding is about. The candidate is the
+/// checked project; the baseline is the comparison revision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    /// The project being checked.
+    #[default]
+    Candidate,
+    /// The historical revision it is compared against.
+    Baseline,
+}
+
+impl Side {
+    /// `true` for the candidate, which JSON leaves implicit.
+    #[must_use]
+    pub fn is_candidate(&self) -> bool {
+        *self == Self::Candidate
+    }
+}
+
+/// One deterministic finding. Ordering is by side, path, code, line, rule,
+/// and message, which is also the order of the report: every candidate
+/// finding precedes every baseline finding.
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 pub struct Diagnostic {
+    /// Which tree the finding is about. Serialized only for the baseline.
+    #[serde(skip_serializing_if = "Side::is_candidate")]
+    pub side: Side,
     /// Project-relative path with forward slashes on every platform.
     pub path: String,
     /// Stable machine-readable identifier.
@@ -169,6 +193,7 @@ impl Diagnostic {
     #[must_use]
     pub fn new(code: Code, path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
+            side: Side::Candidate,
             path: path.into(),
             code,
             line: None,
@@ -191,10 +216,20 @@ impl Diagnostic {
         self.rule = rule;
         self
     }
+
+    /// Attribute the finding to a side.
+    #[must_use]
+    pub fn on_side(mut self, side: Side) -> Self {
+        self.side = side;
+        self
+    }
 }
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.side == Side::Baseline {
+            f.write_str("baseline:")?;
+        }
         f.write_str(&self.path)?;
         if let Some(line) = self.line {
             write!(f, ":{line}")?;

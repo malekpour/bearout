@@ -13,6 +13,31 @@ use starlark::values::{Heap, OwnedFrozenValue, Value as StarlarkValue};
 use crate::document::Document;
 use crate::envelope::Resource;
 use crate::graph::Graph;
+use crate::report::SourceInfo;
+
+/// One side's inputs to the views: its structurally valid resources (by
+/// position in `resources` and in `graph`), its graph, and its parsed
+/// documents. `info` identifies a baseline; the candidate has none here.
+pub struct SideView<'a> {
+    pub info: Option<&'a SourceInfo>,
+    pub resources: &'a [Resource],
+    pub indexes: Vec<usize>,
+    pub graph: &'a Graph,
+    pub documents: &'a [Document],
+}
+
+impl SideView<'_> {
+    fn resource_json(&self) -> Vec<Value> {
+        self.indexes
+            .iter()
+            .map(|index| resource_json(*index, &self.resources[*index], self.graph))
+            .collect()
+    }
+
+    fn document_json(&self) -> Vec<Value> {
+        self.documents.iter().map(Document::view).collect()
+    }
+}
 
 /// Frozen views for one project.
 pub struct Views {
@@ -23,28 +48,40 @@ pub struct Views {
 }
 
 impl Views {
-    /// Build the views over the structurally valid resources and the parsed
-    /// documents. `indexes` are the resources' positions in the parsed
-    /// resource list and in `graph`; `documents` are in path order.
+    /// Build the views over the candidate and, when a baseline was
+    /// compared, the comparison view. The candidate's structurally valid
+    /// resources get individual views; the baseline appears only inside
+    /// `project["comparison"]`, with the same value shapes.
     pub fn build(
-        resources: &[Resource],
-        indexes: &[usize],
-        graph: &Graph,
-        documents: &[Document],
+        candidate: SideView<'_>,
+        comparison: Option<SideView<'_>>,
     ) -> Result<Self, String> {
-        let resource_json: Vec<Value> = indexes
-            .iter()
-            .map(|index| resource_json(*index, &resources[*index], graph))
-            .collect();
-        let document_json: Vec<Value> = documents.iter().map(Document::view).collect();
-        let project_json = project_json(&resource_json, &document_json, graph);
+        let resource_json = candidate.resource_json();
+        let mut candidate_json =
+            project_json(&resource_json, &candidate.document_json(), candidate.graph);
+        candidate_json["comparison"] = match comparison {
+            None => Value::Null,
+            Some(baseline) => {
+                let info = baseline.info.expect("a baseline carries its identity");
+                let mut view = project_json(
+                    &baseline.resource_json(),
+                    &baseline.document_json(),
+                    baseline.graph,
+                );
+                view["revision"] = json!(info.revision);
+                view["tree"] = json!(info.tree);
+                view["digest"] = json!(info.digest);
+                json!({ "baseline": view })
+            }
+        };
+        let indexes = candidate.indexes;
 
         let frozen = Module::with_temp_heap(|module| {
             let heap = module.heap();
             for (index, value) in resource_json.iter().enumerate() {
                 module.set(&format!("resource_{index}"), alloc_json(heap, value)?);
             }
-            module.set("project", alloc_json(heap, &project_json)?);
+            module.set("project", alloc_json(heap, &candidate_json)?);
             module.freeze().map_err(|error| format!("{error:?}"))
         })?;
         let mut views = Vec::with_capacity(indexes.len());
