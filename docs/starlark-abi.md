@@ -43,8 +43,8 @@ Available in every module:
 
 | Constructor | Result |
 | --- | --- |
-| `error(message, resource=None, line=None, code=None)` | A finding that fails the run (B015). |
-| `warning(message, resource=None, line=None, code=None)` | A finding that does not fail the run (B016). |
+| `error(message, resource=None, path=None, line=None, code=None)` | A finding that fails the run (B015). |
+| `warning(message, resource=None, path=None, line=None, code=None)` | A finding that does not fail the run (B016). |
 | `output(template, path, context=None)` | One planned file: `template` relative to the templates root, `path` relative to the project root, `context` a dict. |
 
 Rules enforced at construction, inside the script, so the error names the
@@ -53,14 +53,18 @@ call site:
 - only the fields above; a misspelled keyword is a type error;
 - `message` is a non-empty string; `line` is a positive integer; `code` and
   `resource` are lowercase kebab-case identifiers;
-- `path` and `template` are normalized relative paths;
+- a finding's `path` is a normalized project-relative path of a schema-less
+  document; `resource` and `path` are mutually exclusive;
+- an output's `path` and `template` are normalized relative paths;
 - `context` converts to JSON; anything else is an error.
 
 Rules enforced by the kernel when the value is admitted (B014 if violated):
 
-- a validator may omit `resource` or name its own resource only;
-- a check must name a `resource` that exists in the valid graph;
-- `line` is at most the line count of the named resource;
+- a validator may omit `resource` or name its own resource only; it may
+  never name a `path`;
+- a check must name a `resource` that exists in the valid graph or a
+  `path` that exactly matches a discovered document;
+- `line` is at most the line count of the named resource or document;
 - an output path lies beneath a declared output root and does not collide
   with another output after normalization and case folding.
 
@@ -98,6 +102,27 @@ index into `sections` or `None`.
 | `by_id` | Dict from resource id to view. |
 | `by_schema` | Dict from schema id to the list of resource ids in path order. |
 | `ids` | Dict from every id, resource or fragment, to its kind: the schema id, or `schema#kind` for a fragment. |
+| `documents` | List of schema-less document views in path order; empty when the bootstrap selects no documents. |
+
+## Document view
+
+A schema-less document selected by `[documents]` has Markdown structure
+but no envelope, schema, identifier, shape, or relations, and none is
+synthesized. Only documents that were read and parsed appear; a document
+reported as B022 does not.
+
+| Key | Value |
+| --- | --- |
+| `path` | Project-relative path with forward slashes. |
+| `text` | The whole document, with a leading byte-order mark removed. |
+| `line_count` | Number of lines. |
+| `sections` | As in the resource view. |
+| `anchors` | As in the resource view. |
+| `links` | As in the resource view. |
+| `images` | As in the resource view. |
+
+Views are the same whichever source the run reads; nothing in them names
+the working directory, the index, or a revision.
 
 Only structurally valid resources appear. A resource that failed envelope
 parsing, shape validation, required sections, or fragment validation is

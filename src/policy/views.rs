@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Immutable views of resources and the project, built once as frozen
-//! Starlark values. Repository code receives these; it cannot mutate them.
+//! Immutable views of resources, schema-less documents, and the project,
+//! built once as frozen Starlark values. Repository code receives these; it
+//! cannot mutate them, and nothing in them names the source they came from.
 
 use serde_json::{Map, Value, json};
 use starlark::environment::Module;
@@ -9,6 +10,7 @@ use starlark::values::dict::AllocDict;
 use starlark::values::list::AllocList;
 use starlark::values::{Heap, OwnedFrozenValue, Value as StarlarkValue};
 
+use crate::document::Document;
 use crate::envelope::Resource;
 use crate::graph::Graph;
 
@@ -21,14 +23,21 @@ pub struct Views {
 }
 
 impl Views {
-    /// Build the views over the structurally valid resources. `indexes`
-    /// are their positions in the parsed resource list and in `graph`.
-    pub fn build(resources: &[Resource], indexes: &[usize], graph: &Graph) -> Result<Self, String> {
+    /// Build the views over the structurally valid resources and the parsed
+    /// documents. `indexes` are the resources' positions in the parsed
+    /// resource list and in `graph`; `documents` are in path order.
+    pub fn build(
+        resources: &[Resource],
+        indexes: &[usize],
+        graph: &Graph,
+        documents: &[Document],
+    ) -> Result<Self, String> {
         let resource_json: Vec<Value> = indexes
             .iter()
             .map(|index| resource_json(*index, &resources[*index], graph))
             .collect();
-        let project_json = project_json(&resource_json, graph);
+        let document_json: Vec<Value> = documents.iter().map(Document::view).collect();
+        let project_json = project_json(&resource_json, &document_json, graph);
 
         let frozen = Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -127,7 +136,7 @@ pub fn resource_json(index: usize, resource: &Resource, graph: &Graph) -> Value 
 }
 
 /// The JSON view of the whole project.
-pub fn project_json(resources: &[Value], graph: &Graph) -> Value {
+pub fn project_json(resources: &[Value], documents: &[Value], graph: &Graph) -> Value {
     let ids: Map<String, Value> = graph
         .nodes
         .iter()
@@ -152,5 +161,6 @@ pub fn project_json(resources: &[Value], graph: &Graph) -> Value {
         "by_id": by_id,
         "by_schema": by_schema,
         "ids": ids,
+        "documents": documents,
     })
 }

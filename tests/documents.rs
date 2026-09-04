@@ -279,3 +279,145 @@ fn documents_come_from_the_selected_source() {
     assert_eq!(project.check_from(Source::Index).documents, 3);
     assert_clean(&project.check_from(Source::Revision("HEAD".to_owned())));
 }
+
+// ---- repository policy ----------------------------------------------------
+
+/// A project with two documents, one of which has a vague link and an
+/// image without alt text, and a check that reports both from policy.
+fn policy_project() -> Project {
+    let project = documented_project();
+    project.file(
+        "docs/guide.md",
+        "# Guide\n\n## Usage\n\nClick [here](../README.md) for more.\n\n![](figures/flow.svg)\n",
+    );
+    project.file("docs/figures/flow.svg", "<svg/>\n");
+    project.file(
+        ENTRY,
+        concat!(
+            "def link_text(p):\n",
+            "    out = []\n",
+            "    for d in p[\"documents\"]:\n",
+            "        for l in d[\"links\"]:\n",
+            "            if l[\"text\"].lower() == \"here\":\n",
+            "                out.append(error(\"link text `here` says nothing about \" + l[\"target\"], path = d[\"path\"], line = l[\"line\"], code = \"descriptive-links\"))\n",
+            "        for i in d[\"images\"]:\n",
+            "            if not i[\"alt\"]:\n",
+            "                out.append(warning(\"image \" + i[\"target\"] + \" has no alt text\", path = d[\"path\"], line = i[\"line\"], code = \"image-alt\"))\n",
+            "    return out\n",
+            "schema(\"example/test/note@1\", shape = \"note.schema.toml\")\n",
+            "check(\"document-links\", link_text)\n",
+        ),
+    );
+    project
+}
+
+#[test]
+fn checks_see_documents_in_path_order_and_report_against_them() {
+    let project = policy_project();
+    let report = project.check();
+    assert_eq!(
+        common::lines(&report),
+        [
+            "docs/guide.md:5:B015[descriptive-links]: check `document-links`: link text `here` says nothing about ../README.md",
+            "docs/guide.md:7:B016[image-alt]: check `document-links`: image figures/flow.svg has no alt text",
+        ]
+    );
+    let json = serde_json::to_value(&report).expect("json");
+    assert_eq!(json["diagnostics"][0]["path"], "docs/guide.md");
+    assert_eq!(json["diagnostics"][0]["rule"], "descriptive-links");
+
+    // Path order, and every document view field.
+    project.file(
+        ENTRY,
+        "def order(p):\n    paths = [d[\"path\"] for d in p[\"documents\"]]\n    keys = sorted(p[\"documents\"][0].keys())\n    return [warning(\"order \" + \", \".join(paths) + \"; keys \" + \", \".join(keys) + \"; lines %d\" % p[\"documents\"][0][\"line_count\"], path = \"README.md\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"order\", order)\n",
+    );
+    assert_line(
+        &project.check(),
+        "README.md:B016: check `order`: order README.md, docs/deeper/notes.md, docs/guide.md; keys anchors, images, line_count, links, path, sections, text; lines 3",
+    );
+}
+
+#[test]
+fn document_targets_are_validated_like_resource_targets() {
+    let project = policy_project();
+    let cases: [(&str, &str); 7] = [
+        (
+            "error(\"m\", path = \"docs/nope.md\")",
+            "check `c` finding names unknown document `docs/nope.md`",
+        ),
+        (
+            "error(\"m\", path = \"./docs/guide.md\")",
+            "finding path: `./docs/guide.md` contains `.`",
+        ),
+        (
+            "error(\"m\", path = \"docs/guide.md\", resource = \"note-a\")",
+            "a finding names either a `resource` or a `path`, not both",
+        ),
+        (
+            "error(\"m\", path = \"\")",
+            "finding path must not be empty",
+        ),
+        (
+            "error(\"m\", path = \"docs/guide.md\", line = 99)",
+            "check `c` finding line 99 is beyond the 7 line(s) of `docs/guide.md`",
+        ),
+        (
+            "error(\"m\")",
+            "a check finding must name a `resource` or a `path`",
+        ),
+        (
+            "error(\"m\", path = \"content/note-a.md\")",
+            "finding names unknown document `content/note-a.md`",
+        ),
+    ];
+    for (body, expected) in cases {
+        project.file(
+            ENTRY,
+            &format!("def c(p):\n    return [{body}]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"c\", c)\n"),
+        );
+        let report = project.check();
+        assert_line(&report, expected);
+        assert!(
+            codes(&report)
+                .iter()
+                .all(|code| matches!(code, Code::ScriptResult | Code::ScriptFailure)),
+            "{body}: {:?}",
+            codes(&report)
+        );
+    }
+
+    // A validator stays confined to its own resource.
+    project.file(
+        ENTRY,
+        "def v(r):\n    return [error(\"m\", path = \"docs/guide.md\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\", validate = v)\n",
+    );
+    assert_line(
+        &project.check(),
+        "B014: schema `example/test/note@1` validate a validator may only report its own resource `note-a`, not document `docs/guide.md`",
+    );
+
+    // The last line of a document is a valid target.
+    project.file(
+        ENTRY,
+        "def c(p):\n    return [warning(\"end\", path = \"docs/guide.md\", line = 7)]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"c\", c)\n",
+    );
+    let report = project.check();
+    assert_clean(&report);
+    assert_line(&report, "docs/guide.md:7:B016: check `c`: end");
+}
+
+#[test]
+fn documents_that_failed_to_read_are_not_shown_to_policy() {
+    let project = policy_project();
+    project.bytes("docs/latin1.md", b"# Caf\xe9\n");
+    project.file(
+        ENTRY,
+        "def c(p):\n    return [error(\"m\", path = \"docs/latin1.md\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"c\", c)\n",
+    );
+    let report = project.check();
+    assert_line(&report, "docs/latin1.md:B022");
+    // The read failure is an error, so checks do not run at all; the
+    // document is absent from the views either way.
+    assert_no_line(&report, "B014");
+    assert_no_line(&report, "B015");
+}

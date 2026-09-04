@@ -270,9 +270,6 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     // Phase: parsing.
     let mut parsed = parse_all(tree, &bootstrap, &files, &mut report);
     let documents = read_documents(tree, &bootstrap, &document_paths, &mut report);
-    // Repository policy receives the document views in the next phase; until
-    // then the view is built only to keep the model exercised.
-    let _ = documents.iter().map(document::Document::view).count();
 
     // Repository policy is loaded before structural validation because the
     // entry module registers the schemas and shapes that validation needs.
@@ -322,7 +319,7 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         .collect();
 
     // Phase: repository policy.
-    let views = policy::views::Views::build(&resources, &valid_indexes, &graph)
+    let views = policy::views::Views::build(&resources, &valid_indexes, &graph, &documents)
         .map_err(|error| format!("cannot build script views: {error}"))?;
     let line_counts: BTreeMap<&str, u32> = valid
         .iter()
@@ -332,9 +329,17 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         .iter()
         .map(|resource| (resource.id.as_str(), resource.path.as_str()))
         .collect();
-    run_validators(&valid, &views, &policy, &line_counts, &mut report);
+    let targets = Targets {
+        line_counts: &line_counts,
+        paths_by_id: &paths_by_id,
+        document_lines: &documents
+            .iter()
+            .map(|document| (document.path.as_str(), document.line_count))
+            .collect(),
+    };
+    run_validators(&valid, &views, &policy, &targets, &mut report);
     if report.errors() == 0 {
-        run_checks(&views, &policy, &line_counts, &paths_by_id, &mut report);
+        run_checks(&views, &policy, &targets, &mut report);
     }
 
     // Phases: generation planning, rendering, delivery.
@@ -631,45 +636,63 @@ fn describe(violation: &shape::Violation) -> String {
     }
 }
 
+/// What a finding may be admitted against: the structurally valid
+/// resources by id and the parsed schema-less documents by path.
+struct Targets<'a> {
+    line_counts: &'a BTreeMap<&'a str, u32>,
+    paths_by_id: &'a BTreeMap<&'a str, &'a str>,
+    document_lines: &'a BTreeMap<&'a str, u32>,
+}
+
 /// Turn a finding into a diagnostic, checking its target against the ABI.
+/// A validator may report only its own resource; a check must name a known
+/// resource or a discovered document, and a line within it.
 fn admit(
     finding: &Finding,
     label: &str,
     script: &str,
     own_resource: Option<(&str, &str)>,
-    line_counts: &BTreeMap<&str, u32>,
-    paths_by_id: &BTreeMap<&str, &str>,
+    targets: &Targets<'_>,
 ) -> Diagnostic {
-    let target = match (&finding.resource, own_resource) {
-        (None, Some((_, path))) => Ok(path),
-        (None, None) => Err("a check finding must name a `resource`".to_owned()),
-        (Some(id), Some((own_id, path))) if id == own_id => Ok(path),
-        (Some(id), Some((own_id, _))) => Err(format!(
-            "a validator may only report its own resource `{own_id}`, not `{id}`"
-        )),
-        (Some(id), None) => paths_by_id
-            .get(id.as_str())
-            .copied()
-            .ok_or_else(|| format!("finding names unknown resource `{id}`")),
-    };
-    let target = match target {
+    // (diagnostic path, name used in the line message, line count)
+    let target: Result<(&str, &str, u32), String> =
+        match (&finding.resource, &finding.path, own_resource) {
+            (_, Some(path), Some((own_id, _))) => Err(format!(
+                "a validator may only report its own resource `{own_id}`, not document `{path}`"
+            )),
+            (_, Some(path), None) => targets
+                .document_lines
+                .get(path.as_str())
+                .map(|count| (path.as_str(), path.as_str(), *count))
+                .ok_or_else(|| format!("finding names unknown document `{path}`")),
+            (None, None, Some((id, path))) => Ok((path, id, resource_lines(targets, id))),
+            (None, None, None) => {
+                Err("a check finding must name a `resource` or a `path`".to_owned())
+            }
+            (Some(id), None, Some((own_id, path))) if id == own_id => {
+                Ok((path, own_id, resource_lines(targets, own_id)))
+            }
+            (Some(id), None, Some((own_id, _))) => Err(format!(
+                "a validator may only report its own resource `{own_id}`, not `{id}`"
+            )),
+            (Some(id), None, None) => targets
+                .paths_by_id
+                .get(id.as_str())
+                .map(|path| (*path, id.as_str(), resource_lines(targets, id)))
+                .ok_or_else(|| format!("finding names unknown resource `{id}`")),
+        };
+    let (target, name, count) = match target {
         Ok(target) => target,
         Err(error) => return Diagnostic::new(C::ScriptResult, script, format!("{label} {error}")),
     };
-    if let Some(line) = finding.line {
-        let id = finding
-            .resource
-            .as_deref()
-            .or(own_resource.map(|(id, _)| id))
-            .unwrap_or_default();
-        let count = line_counts.get(id).copied().unwrap_or(0);
-        if line > count {
-            return Diagnostic::new(
-                C::ScriptResult,
-                script,
-                format!("{label} finding line {line} is beyond the {count} line(s) of `{id}`"),
-            );
-        }
+    if let Some(line) = finding.line
+        && line > count
+    {
+        return Diagnostic::new(
+            C::ScriptResult,
+            script,
+            format!("{label} finding line {line} is beyond the {count} line(s) of `{name}`"),
+        );
     }
     let code = if finding.is_error {
         C::PolicyError
@@ -679,6 +702,10 @@ fn admit(
     Diagnostic::new(code, target, format!("{label}: {}", finding.message))
         .at_line(finding.line)
         .with_rule(finding.rule.clone())
+}
+
+fn resource_lines(targets: &Targets<'_>, id: &str) -> u32 {
+    targets.line_counts.get(id).copied().unwrap_or(0)
 }
 
 fn printed(outcome: &CallOutcome<impl Sized>, script: &str, label: &str) -> Vec<Diagnostic> {
@@ -693,10 +720,9 @@ fn run_validators(
     valid: &[&Resource],
     views: &policy::views::Views,
     policy: &Policy,
-    line_counts: &BTreeMap<&str, u32>,
+    targets: &Targets<'_>,
     report: &mut Report,
 ) {
-    let empty = BTreeMap::new();
     let script = policy.entry.as_str();
     for (resource, view) in valid.iter().zip(&views.resources) {
         let Some(outcome) = policy.validate(&resource.schema, view) else {
@@ -712,8 +738,7 @@ fn run_validators(
                         &label,
                         script,
                         Some((&resource.id, resource.path.as_str())),
-                        line_counts,
-                        &empty,
+                        targets,
                     ));
                 }
             }
@@ -725,8 +750,7 @@ fn run_validators(
 fn run_checks(
     views: &policy::views::Views,
     policy: &Policy,
-    line_counts: &BTreeMap<&str, u32>,
-    paths_by_id: &BTreeMap<&str, &str>,
+    targets: &Targets<'_>,
     report: &mut Report,
 ) {
     let script = policy.entry.as_str();
@@ -737,14 +761,7 @@ fn run_checks(
         match outcome.result {
             Ok(findings) => {
                 for finding in &findings {
-                    report.push(admit(
-                        finding,
-                        &label,
-                        script,
-                        None,
-                        line_counts,
-                        paths_by_id,
-                    ));
+                    report.push(admit(finding, &label, script, None, targets));
                 }
             }
             Err(error) => report.push(policy::failure_diagnostic(script, &label, &error)),

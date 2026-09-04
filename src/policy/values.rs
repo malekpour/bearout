@@ -42,7 +42,10 @@ mod host_types {
         pub message: String,
         /// Identifier of the resource the finding is about, when given.
         pub resource: Option<String>,
-        /// One-based line in that resource, when given.
+        /// Project-relative path of the schema-less document the finding is
+        /// about, when given. Exclusive with `resource`.
+        pub path: Option<String>,
+        /// One-based line in that resource or document, when given.
         pub line: Option<u32>,
         /// Repository-owned rule identifier, when given.
         pub rule: Option<String>,
@@ -123,6 +126,7 @@ fn finding(
     is_error: bool,
     message: &str,
     resource: NoneOr<&str>,
+    path: NoneOr<&str>,
     line: NoneOr<i32>,
     code: NoneOr<&str>,
 ) -> starlark::Result<Finding> {
@@ -136,6 +140,22 @@ fn finding(
             Some(id.to_owned())
         }
     };
+    let path = match path {
+        NoneOr::None => None,
+        NoneOr::Other(text) => {
+            let parsed =
+                ProjectPath::parse(text).map_err(|error| fail(format!("finding path: {error}")))?;
+            if parsed.as_str().is_empty() {
+                return Err(fail("finding path must not be empty".to_owned()));
+            }
+            Some(parsed.as_str().to_owned())
+        }
+    };
+    if resource.is_some() && path.is_some() {
+        return Err(fail(
+            "a finding names either a `resource` or a `path`, not both".to_owned(),
+        ));
+    }
     let line = match line {
         NoneOr::None => None,
         NoneOr::Other(line) => Some(
@@ -160,6 +180,7 @@ fn finding(
         is_error,
         message: message.to_owned(),
         resource,
+        path,
         line,
         rule,
     })
@@ -168,25 +189,28 @@ fn finding(
 /// Functions available to every module: the finding and output constructors.
 #[starlark_module]
 pub fn library(builder: &mut GlobalsBuilder) {
-    /// Report an error about a resource. `resource` defaults to the resource
-    /// being validated; project checks must name one.
+    /// Report an error about a resource or a schema-less document.
+    /// `resource` defaults to the resource being validated; project checks
+    /// must name a `resource` or a document `path`.
     fn error(
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named, default = NoneOr::None)] resource: NoneOr<&str>,
+        #[starlark(require = named, default = NoneOr::None)] path: NoneOr<&str>,
         #[starlark(require = named, default = NoneOr::None)] line: NoneOr<i32>,
         #[starlark(require = named, default = NoneOr::None)] code: NoneOr<&str>,
     ) -> starlark::Result<Finding> {
-        finding(true, message, resource, line, code)
+        finding(true, message, resource, path, line, code)
     }
 
-    /// Report a warning about a resource.
+    /// Report a warning about a resource or a schema-less document.
     fn warning(
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named, default = NoneOr::None)] resource: NoneOr<&str>,
+        #[starlark(require = named, default = NoneOr::None)] path: NoneOr<&str>,
         #[starlark(require = named, default = NoneOr::None)] line: NoneOr<i32>,
         #[starlark(require = named, default = NoneOr::None)] code: NoneOr<&str>,
     ) -> starlark::Result<Finding> {
-        finding(false, message, resource, line, code)
+        finding(false, message, resource, path, line, code)
     }
 
     /// Plan one generated file: render `template` to `path` with `context`.
