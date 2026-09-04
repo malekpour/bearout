@@ -25,6 +25,7 @@ pub mod bootstrap;
 mod changes;
 mod document;
 mod envelope;
+mod fixture;
 mod fs;
 mod generate;
 mod git;
