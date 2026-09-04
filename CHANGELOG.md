@@ -31,8 +31,28 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `GIT_INDEX_FILE` is honoured only for a regular file directly inside
   the repository's own Git directory.
 
+- Schema-less Markdown documents. An explicit, read-only `[documents]`
+  grant (`roots` walked recursively for `*.md`, `files` named one by one)
+  selects ordinary Markdown files, which are parsed with the resource body
+  model but get no schema, identifier, or shape. Links and images of
+  resources and documents are checked together: relative and `/`-rooted
+  targets, query strings, percent escapes, same-document and
+  cross-document fragments against GFM heading anchors and explicit
+  `<a id>`/`<a name>` anchors, existing files and directories as link
+  targets, existing files as image targets. A fragment on a Markdown file
+  that is neither a resource nor a selected document is reported instead
+  of assumed valid. New limits `limits.documents` and
+  `limits.document_bytes`; new code B022 for a document that cannot be
+  read; the report and its JSON carry a `documents` count. Policy sees
+  `project["documents"]` and may report findings with `path=` against a
+  document; resource views gain `anchors`, `images`, and `links[].text`.
+  The `document-references` sample shows the slice.
+
 ### Changed
 
+- Markdown reference checking moved out of the identifier graph; explicit
+  `<a id>`/`<a name>` anchors now satisfy fragments in resources too, and
+  images are checked.
 - The kernel reads every source through one read-only tree interface;
   writes go through a separate working-directory delivery capability, so
   `generate --check` needs no write access and writing generation against

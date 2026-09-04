@@ -49,15 +49,20 @@ root = "templates"
 roots = ["generated"]   # the only places generation may write
 license = "Apache-2.0"  # stamped into generated headers
 
+[documents]             # optional; schema-less Markdown, read-only
+roots = ["docs"]        # walked recursively for `*.md`
+files = ["README.md"]   # named one by one
+
 [limits]                # optional; see docs/design.md for which defaults are measured
 ticks = 1000000
 template_fuel = 2000000
 ```
 
 Repository policy can register schemas, checks, and generators. It cannot
-widen the roots the bootstrap grants. Roots are disjoint, none is the
-project root, and all filesystem access goes through a capability opened on
-the project root.
+widen the roots the bootstrap grants. Resource, rules, templates, and
+output roots are disjoint, none is the project root, and all filesystem
+access goes through a capability opened on the project root. The document
+grant is read-only and may overlap any of them.
 
 ## Repository policy
 
@@ -145,6 +150,30 @@ on a non-string property, or a shape that declares an envelope key is an
 error. Markdown bodies are parsed with Comrak; headings get GFM anchors,
 fenced blocks tagged `bearout=<kind>` become typed fragments with
 project-wide identifiers, and every relative link and `#anchor` is resolved.
+
+## Schema-less documents
+
+Ordinary Markdown files such as a README, governance notes, or design
+documents carry no envelope and get no schema, identifier, or shape. An
+explicit `[documents]` grant selects them: `roots` are walked recursively
+for `*.md`, never following links or entering submodules, and `files` are
+named one by one; nothing else is discovered, and a path that resource
+discovery already claims is processed once, as a resource. Documents are
+parsed with the same Comrak model as resource bodies: headings with GFM
+anchors, explicit `<a id>` and `<a name>` anchors, links with their visible
+text, and images with their alt text.
+
+Every link and image of a resource or document is resolved against the
+project tree: relative targets from the source's directory, `/`-prefixed
+targets from the project root, `#fragment` within the source, and a
+fragment on another Markdown file against that file's heading and explicit
+anchors. A fragment on a Markdown file that is neither a resource nor a
+selected document is reported rather than assumed valid; an image must
+name an existing file; a broken reference is B011. Policy sees the
+documents as `project["documents"]` and may report findings against a
+document `path` and line. The [`document-references`](samples/document-references/)
+sample shows the whole slice. Bearout assigns no meaning to any document
+name or directory; which files matter is the repository's decision.
 
 ## Phases
 
@@ -238,7 +267,7 @@ which source a run reads.
 ## Samples
 
 The repository's [`samples/`](https://github.com/malekpour/bearout/tree/main/samples)
-directory holds eight complete projects, from three linked notes to a
+directory holds nine complete projects, from three linked notes to a
 spreadsheet-expression language whose Rust lexer, parser, and conformance
 tests are generated from the resource graph and compiled in CI. The
 [samples index](https://github.com/malekpour/bearout/blob/main/samples/README.md)

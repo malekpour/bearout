@@ -56,10 +56,10 @@ directory and for fatal outcomes.
 | B008 | error | The same identifier is defined more than once. |
 | B009 | error | A reference names an identifier that nothing defines. |
 | B010 | error | A typed relation resolves to a node of the wrong kind. |
-| B011 | error | A Markdown link points at a missing file or anchor. |
+| B011 | error | A Markdown link or image, in a resource or a schema-less document, points at a missing file, names an anchor its target does not define, names an anchor in a Markdown file that is neither a resource nor a selected document, or escapes the project; an image may not name a directory. |
 | B012 | error | A Starlark module could not be loaded, parsed, resolved, or typechecked. The message names the import chain. |
 | B013 | error | A Starlark call failed, was cancelled, or exceeded a resource limit. |
-| B014 | error | A Starlark call returned a value the ABI does not accept, or a finding with an invalid target. |
+| B014 | error | A Starlark call returned a value the ABI does not accept, or a finding with an invalid target: an unknown resource or document, a validator naming another resource or a document, or a line past the end. |
 | B015 | error | An error reported by repository policy through `error()`. |
 | B016 | warning | A warning reported by repository policy through `warning()`. |
 | B017 | warning | A script printed text. |

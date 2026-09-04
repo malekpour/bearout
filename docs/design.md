@@ -17,12 +17,16 @@ repository:
   read-only tree interface;
 - discovery of resources beneath the declared roots, sorted, without
   following symbolic links;
+- discovery of schema-less Markdown documents exactly where the bootstrap
+  selects them;
 - parsing of the resource envelope: TOML front matter through `toml_edit`
-  over an exact byte range, and the Markdown body through Comrak;
+  over an exact byte range, and the Markdown body through Comrak, which
+  also parses schema-less documents;
 - structural validation against JSON Schema 2020-12 shapes and the
   `x-bearout` vocabulary;
-- graph construction: identifier index, typed relations, link and anchor
-  resolution;
+- graph construction: identifier index and typed relations;
+- Markdown reference checking: links, images, heading anchors, and explicit
+  anchors across resources and documents;
 - the Starlark runtime: contained loading, resource limits, cancellation,
   the ABI, and immutable views;
 - diagnostics with stable codes and deterministic ordering;
@@ -49,13 +53,17 @@ Every run proceeds through these phases in order:
 
 1. **bootstrap**: open the selected source as a read-only tree, parse
    `bearout.toml` from it, validate the roots;
-2. **discovery**: walk the resource roots;
-3. **parsing**: envelope, body structure, fragments;
+2. **discovery**: walk the resource roots, then collect the selected
+   schema-less documents minus the paths resources claimed;
+3. **parsing**: envelope, body structure, fragments; document text and
+   structure;
 4. **policy load**: the Starlark entry module and everything it loads,
    which registers schemas, checks, and generators;
 5. **structural validation**: shape, required sections, fragment shapes;
 6. **graph construction**: identifiers from every parsed resource,
-   relations and links from structurally valid ones;
+   relations from structurally valid ones; then Markdown references from
+   structurally valid resources and parsed documents, resolved against the
+   tree and the discovered Markdown set;
 7. **repository policy**: validators over structurally valid resources,
    then checks over the whole graph only when no error has been reported;
 8. **generation planning**: only when no error has been reported;
@@ -185,6 +193,58 @@ unaware of the source: views are identical across sources, and no history,
 diff, or immutability information is exposed. The tree interface is designed so that a later
 phase can hold two independent trees, a candidate and a baseline, in one
 run without another filesystem rewrite; that comparison is not implemented.
+
+## Schema-less documents
+
+A resource has an envelope, a schema, an identifier, a shape, relations,
+and an optional Markdown body. A schema-less document has a project path
+and Markdown structure, nothing more: no schema or identifier is
+synthesized, and a malformed resource never silently becomes a document.
+The bootstrap selects documents explicitly, as `[documents] roots`
+(walked recursively for `.md` files, never following links or entering
+submodules, failing on non-portable names like resource discovery) and
+`[documents] files` (named one by one, which must exist, be `.md`, and not
+be reached through a link). Both lists are sorted; duplicates, nested
+roots, and an empty table are errors. The grant is read-only and may
+overlap resource, rules, templates, or output roots without changing what
+generation may write. A path selected as both resource and document is
+processed once, as a resource. Documents are bounded by `limits.documents`
+(default 10,000, fatal when exceeded) and `limits.document_bytes` (default
+4 MiB, B022 per document), separately from resources. A document that
+cannot be read or is not UTF-8 is B022; a leading byte-order mark is
+removed; CRLF line endings keep their line numbers.
+
+Documents and resource bodies share one Comrak model: headings with GFM
+anchors (Comrak's own algorithm, duplicate-heading suffixes included),
+explicit anchors from the `id` and `name` attributes of `<a>` elements in
+raw HTML (attribute order and case do not matter; no other HTML is
+interpreted, and HTML links and images are not collected), fenced blocks,
+links with visible text, and images with alt text, from inline and
+reference-style syntax and never from code.
+
+Reference checking is a document concern and lives outside the identifier
+graph. A target with a URL scheme is not local. A relative target resolves
+from the source's directory, a leading `/` from the project root, `.` and
+`..` never leaving the project; the query string is dropped; percent
+escapes are decoded on bytes and the result is revalidated as a project
+path. A bare `#fragment` resolves within the source; a fragment on another
+Markdown file resolves against its heading and explicit anchors when that
+file is a structurally valid resource or a parsed document, produces
+nothing when the file failed an earlier phase (that failure is already
+reported), and is reported when the file exists but was never selected, so
+that no anchor is claimed valid without having been read. Fragments on
+non-Markdown files and on directories are not interpreted. An existing
+file or directory is a valid link target; an image must name an existing
+file. Symbolic links and submodules keep the tree's rules. Every broken
+reference is one B011, with distinct wording for links and images.
+
+Repository policy sees documents as `project["documents"]`, in path order,
+each with its path, text, line count, sections, anchors, links, and
+images, and may report a finding against a document `path` and a line
+within it; a validator remains confined to its own resource. Which
+documents matter, and what a good link or alt text is, are repository
+decisions: the kernel assigns no meaning to a README, a governance file,
+or any other name.
 
 ## Schema and resource identity
 
