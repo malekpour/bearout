@@ -401,8 +401,9 @@ mutations in order through a read-only overlay: `write` replaces or
 creates one regular file from inline `content` or a project-relative
 `payload` file of the selected source, `delete` removes one regular file,
 and `move` relocates one to a path that does not exist. Each path is
-touched once per case, nothing beneath a file or through a symbolic link
-is touched, and every conflict is refused before any case runs. Every
+touched once per case and never above or beneath another touched path,
+nothing beneath a file or through a symbolic link is touched, and every
+conflict in any case is refused before the first case runs. Every
 case starts from the same unchanged source; the working directory, the
 index, Git objects, and the fixture files are never written.
 

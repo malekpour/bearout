@@ -91,6 +91,13 @@ fn main() {
             std::fs::write(&file, b"edited meanwhile\n").expect("edit target");
             out.write_all(&input.to_ascii_uppercase())
         }
+        Some("touch") => {
+            // Leave a marker at the given absolute path, proving the
+            // formatter ran at all.
+            let marker = args.get(1).cloned().unwrap_or_default();
+            std::fs::write(&marker, b"ran").expect("write marker");
+            out.write_all(&input)
+        }
         Some("crash") => std::process::abort(),
         _ => out.write_all(&input),
     }

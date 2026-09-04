@@ -455,13 +455,18 @@ observable tree semantics as the other sources: sorted walks that never
 follow links or enter submodules, file and directory existence (a
 directory exists when the base has it or a written file lies beneath it),
 subtree confinement through the base's own subtrees, and bounded reads
-that report the bytes pulled. Mutations are validated in order before any
-case runs, over the virtual state the earlier ones produced: each path is
-touched once per case, a write replaces a regular file or creates one
-where nothing exists, a delete and a move source must name a regular
-file of the base, a move destination must not exist, and no touched path
-may be, lie beneath, or be reached through a link, a submodule, or a
-regular file. Every case starts from the same unchanged base, so nothing
+that report the bytes pulled. Every case's mutations are validated, and
+its overlay built, before any case is evaluated, so an invalid later case
+stops the suite before an earlier case runs the policy or an authorized
+formatter. Validation proceeds in manifest order over the virtual state
+the earlier mutations produced: each path is touched once per case and
+never lies beneath or above another touched path (directory replacement
+is not implemented, so no path can end up both a file and a directory),
+a write replaces a regular file or creates one where nothing exists, a
+delete and a move source must name a regular file of the base, a move
+destination must not exist, and no touched path may be, lie beneath, or
+be reached through a link, a submodule, or a regular file. Every case
+starts from the same unchanged base, so nothing
 leaks between cases; the repository-wide hygiene universe of a
 working-directory source is Git's listing plus the overlay's written and
 moved files, filtered by what the overlay presents. The whole suite,

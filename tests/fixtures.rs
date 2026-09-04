@@ -1336,6 +1336,49 @@ fn formatters_stay_unauthorized_unless_allowed() {
 }
 
 #[test]
+fn every_case_is_validated_before_any_case_runs() {
+    let project = project();
+    let formatter = env!("CARGO_BIN_EXE_bearout-fixture-formatter").replace('\\', "/");
+    let marker = project.path().join("formatter-ran");
+    let marker_text = marker.to_str().unwrap().replace('\\', "/");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{formatter}\", \"touch\", \"{marker_text}\"]\nextensions = [\"txt\"]\n",
+            bootstrap("")
+        ),
+    );
+    project.file("src/a.txt", "text\n");
+    let first = note_case("first runs the formatter", "C", "clean");
+    let invalid = write_case(
+        "later case is invalid",
+        "expect = \"clean\"\n[[cases.mutations]]\ndelete = \"content/missing.md\"\n",
+    );
+    let authorized = Options {
+        allow_formatters: true,
+        ..Options::default()
+    };
+    project.file(FIXTURE_FILE, &format!("{first}{invalid}"));
+    let report = bearout::test(project.path(), &authorized);
+    assert_suite_fatal(&report, "case `later case is invalid`: mutation 1");
+    assert!(
+        !marker.exists(),
+        "the first case's formatter ran before the suite was validated"
+    );
+    // A suite whose every case is valid runs the formatter as authorized.
+    project.file(FIXTURE_FILE, &first);
+    assert_suite_ok(&bearout::test(project.path(), &authorized));
+    assert!(marker.exists());
+    // Without the formatter, the same ordering holds for the evaluator:
+    // a fatal suite reports no case at all.
+    project.file("bearout.toml", &bootstrap(""));
+    project.file(FIXTURE_FILE, &format!("{first}{invalid}"));
+    let report = test(&project);
+    assert_suite_fatal(&report, "case `later case is invalid`");
+    assert!(report.cases.is_empty());
+}
+
+#[test]
 fn check_generate_and_format_never_execute_fixtures() {
     let project = project();
     // A fixture that would be fatal to run, and one that would fail.

@@ -15,12 +15,14 @@
 //!
 //! Mutations are validated in manifest order before any evaluation, over
 //! the virtual state the earlier mutations produced: a path may be touched
-//! once per case, a write replaces a regular file or creates one where
-//! nothing exists, a delete and a move source must name a regular file of
-//! the base, a move destination must not exist, and no touched path may
-//! be, lie beneath, or be reached through a symbolic link, a submodule, or
-//! a regular file. A write is the only operation that replaces content;
-//! every other collision is refused.
+//! once per case and never lies beneath or above another touched path, a
+//! write replaces a regular file or creates one where nothing exists, a
+//! delete and a move source must name a regular file of the base, a move
+//! destination must not exist, and no touched path may be, lie beneath,
+//! or be reached through a symbolic link, a submodule, or a regular file.
+//! A write is the only operation that replaces content; every other
+//! collision is refused, so no path can end up both a file and a
+//! directory.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -96,13 +98,32 @@ impl Overlay {
         for (index, mutation) in mutations.iter().enumerate() {
             let position = index + 1;
             let refuse = |message: String| format!("mutation {position}: {message}");
-            for path in mutation.touched() {
+            if let Mutation::Move { from, to } = mutation
+                && from == to
+            {
+                return Err(refuse(format!("`{from}` cannot be moved onto itself")));
+            }
+            let own = mutation.touched();
+            for (offset, path) in own.iter().enumerate() {
+                let path: &ProjectPath = path;
                 if path.as_str().is_empty() {
                     return Err(refuse("the project root cannot be mutated".to_owned()));
                 }
                 if touched.contains(path) {
                     return Err(refuse(format!(
                         "`{path}` is touched by an earlier mutation of the same case; each path may be mutated once"
+                    )));
+                }
+                // A touched path never lies above or beneath another one,
+                // earlier or in the same mutation: directory replacement is
+                // not a semantics the overlay implements.
+                let related = touched
+                    .iter()
+                    .chain(own[..offset].iter().copied())
+                    .find(|other| path.is_within(other) || other.is_within(path));
+                if let Some(other) = related {
+                    return Err(refuse(format!(
+                        "`{path}` lies beneath or above `{other}`, which the same case also mutates; a path is never both a file and a directory"
                     )));
                 }
                 for ancestor in path.ancestors() {
@@ -162,9 +183,6 @@ impl Overlay {
                     entries.insert(path.clone(), Entry::Tombstone);
                 }
                 Mutation::Move { from, to } => {
-                    if from == to {
-                        return Err(refuse(format!("`{from}` cannot be moved onto itself")));
-                    }
                     if state(from) != State::File {
                         return Err(refuse(format!(
                             "`{from}` is not a regular file of the source tree; only existing regular files are moved"
@@ -174,9 +192,6 @@ impl Overlay {
                         return Err(refuse(format!(
                             "`{to}` already exists; a move never replaces anything"
                         )));
-                    }
-                    if to.is_within(from) {
-                        return Err(refuse(format!("`{to}` lies beneath `{from}`")));
                     }
                     entries.insert(from.clone(), Entry::Tombstone);
                     entries.insert(to.clone(), Entry::Alias(from.clone()));
@@ -650,14 +665,34 @@ mod tests {
                 "mutation 2",
             ),
             (vec![mv("docs/a.md", "docs/b.md")], "already exists"),
-            (vec![mv("docs/a.md", "docs")], "already exists"),
+            (vec![mv("docs/a.md", "docs")], "lies beneath or above"),
             (vec![mv("docs/a.md", "docs/a.md")], "onto itself"),
+            (
+                vec![delete("top.txt"), write("top.txt/child.md", "x")],
+                "mutation 2: `top.txt/child.md` lies beneath or above `top.txt`",
+            ),
+            (
+                vec![write("new/child.md", "x"), mv("docs/a.md", "new")],
+                "mutation 2: `new` lies beneath or above `new/child.md`",
+            ),
+            (
+                vec![write("new/child.md", "x"), write("new", "y")],
+                "mutation 2: `new` lies beneath or above `new/child.md`",
+            ),
+            (
+                vec![mv("docs/a.md", "docs/sub/c.md/inner.md")],
+                "which is a file",
+            ),
+            (
+                vec![delete("docs/a.md"), delete("docs")],
+                "mutation 2: `docs` lies beneath or above `docs/a.md`",
+            ),
             (vec![mv("docs/missing.md", "x.md")], "not a regular file"),
             (vec![mv("docs", "elsewhere")], "not a regular file"),
             (vec![write("top.txt/inner.md", "x")], "which is a file"),
             (
                 vec![write("new.md", "x"), write("new.md/inner.md", "y")],
-                "which is a file",
+                "lies beneath or above",
             ),
             (vec![mv("docs/a.md", "top.txt/a.md")], "which is a file"),
             (
@@ -683,6 +718,105 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// Every walked path is a file and nothing else, every strict ancestor
+    /// is a directory and nothing else, and a subtree at every ancestor
+    /// walks exactly the paths beneath it.
+    fn assert_consistent(overlay: &dyn ReadTree) {
+        let walked = overlay.walk(&ProjectPath::root()).unwrap();
+        for path in &walked {
+            assert!(overlay.exists(path), "{path} walked but absent");
+            assert!(overlay.is_file(path), "{path} walked but not a file");
+            assert!(!overlay.is_dir(path), "{path} is a file and a directory");
+            assert!(overlay.read(path).is_ok(), "{path} walked but unreadable");
+            assert!(
+                overlay.subtree(path).is_err(),
+                "{path} is a file yet a subtree"
+            );
+            for ancestor in path.ancestors() {
+                if ancestor == *path || ancestor.as_str().is_empty() {
+                    continue;
+                }
+                assert!(overlay.exists(&ancestor), "{ancestor} missing");
+                assert!(overlay.is_dir(&ancestor), "{ancestor} not a directory");
+                assert!(
+                    !overlay.is_file(&ancestor),
+                    "{ancestor} is a file and a directory"
+                );
+                assert!(overlay.read(&ancestor).is_err());
+                let subtree = overlay.subtree(&ancestor).unwrap();
+                let expected: Vec<ProjectPath> = walked
+                    .iter()
+                    .filter_map(|p| p.strip_prefix(&ancestor))
+                    .filter(|p| !p.as_str().is_empty())
+                    .collect();
+                assert_eq!(
+                    subtree.walk(&ProjectPath::root()).unwrap(),
+                    expected,
+                    "subtree at {ancestor}"
+                );
+                assert_eq!(
+                    overlay.walk(&ancestor).unwrap(),
+                    walked
+                        .iter()
+                        .filter(|p| p.is_within(&ancestor))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    "walk at {ancestor}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_path_is_never_both_a_file_and_a_directory() {
+        let (_dir, base) = base();
+        // Either order of an ancestor/descendant collision is refused.
+        for mutations in [
+            vec![delete("top.txt"), write("top.txt/child.md", "child")],
+            vec![write("top.txt/child.md", "child"), delete("top.txt")],
+            vec![write("new/child.md", "x"), mv("docs/a.md", "new")],
+            vec![mv("docs/a.md", "new"), write("new/child.md", "x")],
+            vec![
+                delete("docs/sub/c.md"),
+                mv("docs/a.md", "docs/sub/c.md/x.md"),
+            ],
+        ] {
+            let error = Overlay::build(Arc::clone(&base), &mutations).unwrap_err();
+            // Refused as a collision between touched paths or, when the
+            // ancestor is still a file of the base, as a write beneath a
+            // file; never accepted.
+            assert!(
+                error.contains("lies beneath or above") || error.contains("which is a file"),
+                "{mutations:?}: {error}"
+            );
+        }
+        // Accepted overlays stay mutually consistent across every view.
+        for mutations in [
+            vec![],
+            vec![delete("top.txt"), write("fresh/top.txt", "x")],
+            vec![
+                write("docs/new/deep/d.md", "d"),
+                mv("docs/sub/c.md", "moved/c.md"),
+                delete("docs/a.md"),
+                write("docs/b.md", "B"),
+            ],
+            vec![
+                mv("top.txt", "docs/sub/top.txt"),
+                write("docs/sub/more/e.md", "e"),
+            ],
+        ] {
+            let overlay = Overlay::build(Arc::clone(&base), &mutations).unwrap();
+            assert_consistent(&overlay);
+            assert!(!overlay.is_file(&ProjectPath::root()));
+            assert!(overlay.is_dir(&ProjectPath::root()));
+        }
+        let overlay = Overlay::build(base, &[delete("top.txt")]).unwrap();
+        assert!(!overlay.exists(&path("top.txt")));
+        assert!(!overlay.is_dir(&path("top.txt")));
+        assert!(overlay.walk(&path("top.txt")).is_err());
+        assert!(overlay.subtree(&path("top.txt")).is_err());
     }
 
     #[test]

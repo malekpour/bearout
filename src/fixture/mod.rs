@@ -575,18 +575,27 @@ fn run_inner(root: &Path, options: &Options) -> Result<TestReport, String> {
                 .join(", ")
         ));
     }
-    // The suite is captured in full before any mutation is applied.
+    // The suite is captured in full before any mutation is applied, and
+    // every case's overlay is validated before any case is evaluated, so
+    // an invalid later case stops the suite before an earlier case runs
+    // the policy or an authorized formatter.
     let suite = Suite::load(tree, &bootstrap)?;
     let base = opened.shared()?;
+    let overlays = suite
+        .cases
+        .iter()
+        .map(|case| {
+            // Every case starts from the same unchanged base.
+            Overlay::build(Arc::clone(&base), &case.mutations)
+                .map_err(|message| format!("case `{}`: {message}", case.name))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let source = opened.info();
     let mut report = TestReport {
         source: source.clone(),
         ..TestReport::default()
     };
-    for case in &suite.cases {
-        // Every case starts from the same unchanged base.
-        let overlay = Overlay::build(Arc::clone(&base), &case.mutations)
-            .map_err(|message| format!("case `{}`: {message}", case.name))?;
+    for (case, overlay) in suite.cases.iter().zip(&overlays) {
         let introduced = overlay.introduced();
         let universe = match &opened {
             Opened::Working(_) => hygiene::Universe::WorkingDirectory {
@@ -605,7 +614,7 @@ fn run_inner(root: &Path, options: &Options) -> Result<TestReport, String> {
             info: None,
         });
         let inputs = Inputs {
-            tree: &overlay,
+            tree: overlay,
             universe,
             source: source.clone(),
             baseline,
