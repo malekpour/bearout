@@ -208,6 +208,7 @@ bearout --format json check [path]      # one JSON report for every outcome
 bearout check --index [path]            # check what a commit would record
 bearout check --revision v1.2 [path]    # check one commit, tag, branch, or tree
 bearout generate --check --index [path] # verify outputs as staged
+bearout check --index --baseline HEAD   # and compare with an exact revision
 ```
 
 Diagnostics use stable codes and forward-slash project-relative paths on
@@ -260,9 +261,40 @@ line-ending conversion or filters, and nothing is checked out.
 
 Both sources are read-only: `check` and `generate --check` accept them,
 `generate` without `--check` refuses them with exit code 2. Git support does
-not make Bearout a security sandbox, and this phase exposes no history,
-diffs, or immutability rules to repository policy; scripts do not learn
-which source a run reads.
+not make Bearout a security sandbox, and scripts do not learn which source
+a run reads.
+
+## Comparison
+
+> [!WARNING]
+> Comparison is experimental, like the Git-backed sources it builds on.
+
+`--baseline <rev>` (library: `Options::baseline`) makes a run compare its
+candidate, whatever source that is, with one exact Git revision of the
+same repository. Nothing is inferred: no `HEAD`, parent, merge base, or
+default branch. The name is resolved once, the candidate is checked as
+usual, and the baseline is read-only historical evidence that is never
+written and whose policy is never executed. The candidate's policy is the
+only policy that runs: the baseline's own `bearout.toml` decides which
+paths that revision classified as resources and documents, the
+candidate's limits bound both sides, and the candidate's schemas and
+shapes validate both. A revision without a `bearout.toml` is an empty
+history; a baseline whose history the current policy cannot interpret is
+reported on the baseline side, with `"side": "baseline"` in JSON and a
+`baseline:` prefix in text, and fails the run.
+
+Policy sees `project["comparison"]`, `None` without a baseline: the
+historical `baseline` view with the same resource and document shapes as
+the candidate, and `changes`, deterministic facts over the contract
+surface (the bootstrap, the discovered resources, and the discovered
+documents; not the whole repository) as `added`, `removed`, or `modified`
+paths with each side's classification, digest, and size. A rename is a
+removal plus an addition; resources pair through their ids. A check may
+report against either side with `side="baseline"`, so a deleted record
+can be named. What is immutable, when, and what may still change is the
+repository's policy, never the kernel's; the
+[`decision-records`](samples/decision-records/) sample shows one such
+rule. The report carries the resolved baseline identity as `baseline`.
 
 ## Samples
 

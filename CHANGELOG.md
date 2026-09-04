@@ -48,6 +48,26 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   document; resource views gain `anchors`, `images`, and `links[].text`.
   The `document-references` sample shows the slice.
 
+- Experimental candidate/baseline comparison. `--baseline <REV>` (library:
+  `Options::baseline`) names one exact Git revision of the same repository
+  to compare the candidate against; nothing is inferred. It composes with
+  every candidate source and with `generate --check`; writing generation
+  still needs a working-directory candidate. The baseline is projected
+  through the candidate's policy: its own `bearout.toml` selects which
+  paths it classified as resources and documents, the candidate's limits
+  bound it, and the candidate's schemas and shapes validate it; no
+  baseline Starlark, generator, or template ever runs, and a revision
+  without a `bearout.toml` is an empty historical project. Baseline
+  problems keep their codes and carry a structured `side` (`baseline` in
+  JSON, a `baseline:` prefix in text). Policy sees
+  `project["comparison"]` with the historical `baseline` view and
+  deterministic `changes` over the contract surface (bootstrap,
+  resources, documents; added, removed, modified; no rename heuristics),
+  and `error()`/`warning()` accept `side="baseline"` to target a
+  history-only resource or document. The report carries the resolved
+  baseline identity as `baseline`. What is immutable is entirely the
+  repository policy's decision; the `decision-records` sample shows one.
+
 ### Changed
 
 - Markdown reference checking moved out of the identifier graph; explicit

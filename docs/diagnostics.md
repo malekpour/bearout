@@ -24,13 +24,29 @@ Codes are experimental until the first tagged release. After that:
 
 Source failures are fatal: a Git-backed source that cannot be opened (no
 repository, no `git` executable, an unmerged index), a revision that does
-not resolve, and writing generation requested against the index or a
-revision. Conflicting source flags are an invocation error. A Git-backed
-run reports its diagnostics with the same codes, paths, and ordering as a
-working-directory run; only the tree the paths refer to differs.
+not resolve, writing generation requested against the index or a
+revision, and a comparison baseline that cannot be opened, does not
+resolve, has an unusable historical `bearout.toml`, or names roots and
+files its own tree lacks. Conflicting source flags are an invocation
+error. A Git-backed run reports its diagnostics with the same codes,
+paths, and ordering as a working-directory run; only the tree the paths
+refer to differs.
+
+With a comparison baseline, diagnostics about the historical tree keep
+their codes (B001, B002, B003, B005, B008, B022, and so on, plus B015 and
+B016 for policy findings targeted at the baseline) and carry a
+`side` of `baseline`: in JSON as `"side": "baseline"` (absent for the
+candidate), in text as a `baseline:` prefix before the path. Every
+candidate diagnostic sorts before every baseline diagnostic. A baseline
+diagnostic of error severity fails the run like a candidate one, because
+history the current policy cannot interpret is a comparison the policy
+cannot make.
 
 `--format json` prints one JSON report for every outcome, including fatal
-ones. Its `outputs` list is non-empty only when generation succeeded: in
+ones. With a comparison, the report also carries `baseline`, the resolved
+baseline identity in the same shape as `source` (`kind`, `revision` as
+supplied, `tree`, `digest`); it is absent when no baseline was requested.
+ Its `outputs` list is non-empty only when generation succeeded: in
 write mode the outputs delivered or already current, in check mode the
 outputs verified as current. A failed rendering, state validation, check,
 or delivery leaves it empty, and `check` runs never fill it. For the Git

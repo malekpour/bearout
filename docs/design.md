@@ -189,10 +189,78 @@ The JSON report carries a `source` field for the Git sources only
 (`{"kind": "index", "digest": ...}` or `{"kind": "revision", "revision":
 ..., "tree": ..., "digest": ...}`), so that a report can be tied to the
 exact content it examined. The field is experimental. Repository policy is
-unaware of the source: views are identical across sources, and no history,
-diff, or immutability information is exposed. The tree interface is designed so that a later
-phase can hold two independent trees, a candidate and a baseline, in one
-run without another filesystem rewrite; that comparison is not implemented.
+unaware of the source: views are identical across sources. The tree
+interface holds two independent trees in one run when a comparison is
+requested; see the comparison section below.
+
+## Candidate and baseline comparison
+
+Comparison is opt-in and experimental. `Options::baseline` (`--baseline
+<rev>`) names one exact Git revision of the same repository; the kernel
+never infers `HEAD`, a parent, a merge base, or a default branch. The
+candidate is the selected source as usual, working directory, index, or
+revision, and is checked exactly as without a comparison. The baseline is
+opened before the bootstrap is read, resolved once, never written, and
+dropped with the run. Writing generation still requires a working-directory
+candidate; `generate --check` compares from any candidate.
+
+**Authority.** The candidate's policy is the only policy executed. The
+baseline's `bearout.toml`, when present, is parsed as passive historical
+data whose only effect is to say which paths that revision classified as
+resources and as schema-less documents, with resource precedence applied
+on each side independently; it grants nothing, and no baseline rule
+module, shape, template, generator, or output state is loaded or executed.
+The candidate's limits bound both sides and can only be tightened by the
+candidate. The candidate's registered schemas and shapes validate both
+sides, so a baseline resource whose schema the candidate no longer
+registers, or that fails the current shape, is reported and withheld from
+policy rather than exposed unvalidated: the current policy must retain
+enough schema knowledge to interpret the history it compares against.
+Validators run once per candidate resource, never per baseline resource;
+comparison is a project-level concern. Historical references are not
+re-checked against either tree, and no generation runs against the
+baseline. A revision that predates the project directory or its
+`bearout.toml` is an empty historical project, so a wholly added project
+compares; a malformed historical `bearout.toml`, or one naming roots and
+files its tree lacks, is fatal, since it leaves the historical
+classification unknown.
+
+**Diagnostics.** Baseline problems keep the codes of the same failure
+classes and carry a structured side: `"side": "baseline"` in JSON, absent
+for the candidate, and a `baseline:` prefix in text. Report order places
+every candidate diagnostic before every baseline diagnostic. A baseline
+error fails the run and, like any other error, stops project checks from
+running: a comparison against history the policy cannot interpret is not
+made.
+
+**Change facts.** Each side records, for every file it actually read (the
+bootstrap, the discovered resources, the discovered documents), the
+classification its own bootstrap gave the path and the BLAKE3 digest of
+exactly the bytes parsed, so a digest and its parse come from one read
+even for the live working directory. The two surfaces are compared by
+path: `added`, `removed`, or `modified`, a differing classification
+counting as a modification, unchanged paths omitted, no Git rename or
+similarity heuristics, so a rename is a removal plus an addition while
+resources still pair through their stable ids in the two views. Documents
+stay path-identified. This is the declared contract surface, not a
+repository diff; file modes, commit metadata, and commit ranges are not
+part of it.
+
+**Views and findings.** `project["comparison"]` is `None` without a
+baseline; otherwise `baseline` holds the revision as supplied, the
+resolved tree, the tree digest, and `resources`, `by_id`, `by_schema`,
+`ids`, and `documents` with the candidate's value shapes, sorted the same
+way, and `changes` holds the facts. Only structurally valid baseline
+resources and parsed baseline documents appear. A check may target either
+side with `side`, so deletion or corruption of a history-only resource or
+document can be named; a resource on both sides is addressed through the
+side, never guessed. Validators stay confined to their own candidate
+resource. Nothing exposes the filesystem, arbitrary historical blobs,
+Git, process state, or the source a run reads. The kernel enforces no
+immutability: which records are protected, from when, which fields or
+fragments, which corrections are allowed, and whether deletion, movement,
+or reclassification is permitted are all repository policy, as the
+`decision-records` sample shows.
 
 ## Schema-less documents
 

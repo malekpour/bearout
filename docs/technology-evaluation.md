@@ -93,6 +93,15 @@ makes Git itself the authority on what the index and a revision contain.
 The Git-backed sources are documented as experimental so the choice can be
 revisited when real integrations produce evidence.
 
+The comparison baseline reuses the revision source unchanged; only its
+capture tolerates a revision that predates the project directory. Change
+facts are computed by Bearout from the bytes it parsed, not by `git diff`:
+Git's rename and copy detection is a similarity heuristic whose result
+depends on thresholds and on the rest of the tree, while contract policy
+needs a fact that two runs, two machines, and two candidate sources agree
+on. Resources keep their identity through their ids, so policy can pair
+a moved record without the kernel guessing.
+
 ## Other components
 
 - `toml_edit` parses the bootstrap, front matter, header-only resources,
