@@ -1244,3 +1244,42 @@ fn repeated_oversized_files_exhaust_the_total_budget() {
         "big/a.txt:B024: file is 150 bytes, above `limits.file_bytes` = 100",
     );
 }
+
+#[test]
+fn exact_exhaustion_then_a_nonempty_file_is_fatal_from_every_source() {
+    // Once the budget is spent to the byte, the next nonempty file reaches
+    // the budget boundary, not the file limit, and it does so identically
+    // whether the tree pulled a probe byte (the working directory) or
+    // decided from the recorded size without loading anything (Git).
+    let project = text_project();
+    let bootstrap = |hygiene_bytes: u32| {
+        format!(
+            "{}\n[limits]\nfile_bytes = 100\nhygiene_bytes = {hygiene_bytes}\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"big\"]")
+        )
+    };
+    project.file("bearout.toml", &bootstrap(100));
+    project.remove(".editorconfig");
+    project.file("big/a.txt", &format!("{}\n", "x".repeat(99)));
+    project.file("big/b.txt", "y\n");
+    project.git_init();
+    project.commit_all("base");
+    let sources = [
+        Source::WorkingDirectory,
+        Source::Index,
+        Source::Revision("HEAD".to_owned()),
+    ];
+    for source in &sources {
+        assert_fatal(
+            &project.check_from(source.clone()),
+            "hygiene inputs exceed `limits.hygiene_bytes` = 100 while reading `big/b.txt`",
+        );
+    }
+    // With exactly enough for both, the budget bounds the second read at
+    // its own size and the run is clean from every source.
+    project.file("bearout.toml", &bootstrap(102));
+    project.commit_all("room");
+    for source in &sources {
+        assert_clean(&project.check_from(source.clone()));
+    }
+}

@@ -22,8 +22,10 @@ pub mod text;
 pub mod write;
 
 use std::cell::Cell;
+use std::io;
 
 use crate::bootstrap::{Bootstrap, Limits};
+use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
 use crate::tree::ReadTree;
 
@@ -53,11 +55,30 @@ impl Budget {
         &self.limits
     }
 
-    /// The bound one more read may use: `limits.file_bytes` or the bytes
-    /// left in the budget, whichever is smaller.
-    #[must_use]
-    pub fn read_limit(&self) -> u64 {
-        self.limits.file_bytes.min(self.remaining.get())
+    /// Read one hygiene input within `limits.file_bytes` and what remains
+    /// of the budget, charging every byte the tree pulled. The bound the
+    /// read used decides which boundary an over-limit file reached: the
+    /// budget when it supplied the effective bound (the remaining bytes
+    /// being at most `limits.file_bytes`), the file limit otherwise. That
+    /// decision is made here, from the bounds alone, so identical content
+    /// ends the same way from every source whether or not the tree pulled
+    /// a probe byte to learn the file was over.
+    pub fn read(&self, tree: &dyn ReadTree, path: &ProjectPath) -> Bounded {
+        let remaining = self.remaining.get();
+        let budget_bound = remaining <= self.limits.file_bytes;
+        let limit = self.limits.file_bytes.min(remaining);
+        let (pulled, over) = match tree.read_bounded(path, limit) {
+            Ok(read) => read,
+            Err(error) => return Bounded::Unreadable(error),
+        };
+        if let Err(message) = self.charge(path.as_str(), pulled.len() as u64) {
+            return Bounded::Exhausted(message);
+        }
+        match (over, budget_bound) {
+            (false, _) => Bounded::Within(pulled),
+            (true, true) => Bounded::Exhausted(self.exhausted(path.as_str())),
+            (true, false) => Bounded::OverFileLimit,
+        }
     }
 
     /// Charge `bytes` for reading `what`; exhaustion is fatal.
@@ -67,12 +88,30 @@ impl Budget {
                 self.remaining.set(left);
                 Ok(())
             }
-            None => Err(format!(
-                "hygiene inputs exceed `limits.hygiene_bytes` = {} while reading `{what}`",
-                self.limits.hygiene_bytes
-            )),
+            None => Err(self.exhausted(what)),
         }
     }
+
+    fn exhausted(&self, what: &str) -> String {
+        format!(
+            "hygiene inputs exceed `limits.hygiene_bytes` = {} while reading `{what}`",
+            self.limits.hygiene_bytes
+        )
+    }
+}
+
+/// The outcome of one bounded hygiene read; see [`Budget::read`].
+#[derive(Debug)]
+pub enum Bounded {
+    /// The whole file, within both bounds and charged.
+    Within(Vec<u8>),
+    /// The file holds more than `limits.file_bytes`; what the tree pulled
+    /// to learn that is charged.
+    OverFileLimit,
+    /// The run's `limits.hygiene_bytes` is exhausted: the fatal message.
+    Exhausted(String),
+    /// The tree could not read the file.
+    Unreadable(io::Error),
 }
 
 /// One selected file with its bytes, read exactly once.
@@ -82,11 +121,8 @@ pub struct Loaded {
     pub bytes: Vec<u8>,
 }
 
-/// Read every selected file within `limits.file_bytes` and the run's
-/// budget. Each read is bounded by the smaller of the two, every byte
-/// pulled is charged, an overflow probe included, and the boundary that
-/// was reached is the one reported: an exhausted budget is fatal, a file
-/// too large or unreadable is B024 and is not returned.
+/// Read every selected file through [`Budget::read`]: an exhausted budget
+/// is fatal, a file too large or unreadable is B024 and is not returned.
 pub fn load(
     tree: &dyn ReadTree,
     selected: Vec<Selected>,
@@ -97,23 +133,18 @@ pub fn load(
     let mut loaded = Vec::new();
     for entry in selected {
         let path = entry.path.as_str();
-        match tree.read_bounded(&entry.path, budget.read_limit()) {
-            Ok((pulled, true)) => {
-                budget.charge(path, pulled.len() as u64)?;
-                diagnostics.push(Diagnostic::new(
-                    Code::FileUnreadable,
-                    path,
-                    over_limit(tree, &entry.path, "file", limits.file_bytes),
-                ));
-            }
-            Ok((bytes, false)) => {
-                budget.charge(path, bytes.len() as u64)?;
-                loaded.push(Loaded {
-                    selected: entry,
-                    bytes,
-                });
-            }
-            Err(error) => diagnostics.push(Diagnostic::new(
+        match budget.read(tree, &entry.path) {
+            Bounded::Within(bytes) => loaded.push(Loaded {
+                selected: entry,
+                bytes,
+            }),
+            Bounded::OverFileLimit => diagnostics.push(Diagnostic::new(
+                Code::FileUnreadable,
+                path,
+                over_limit(tree, &entry.path, "file", limits.file_bytes),
+            )),
+            Bounded::Exhausted(message) => return Err(message),
+            Bounded::Unreadable(error) => diagnostics.push(Diagnostic::new(
                 Code::FileUnreadable,
                 path,
                 format!("cannot read file: {error}"),
@@ -125,12 +156,7 @@ pub fn load(
 
 /// The message for a file above `limits.file_bytes`, with its length when
 /// the tree can still report one.
-pub fn over_limit(
-    tree: &dyn ReadTree,
-    path: &crate::paths::ProjectPath,
-    what: &str,
-    limit: u64,
-) -> String {
+pub fn over_limit(tree: &dyn ReadTree, path: &ProjectPath, what: &str, limit: u64) -> String {
     match tree.file_len(path) {
         Ok(len) if len > limit => {
             format!("{what} is {len} bytes, above `limits.file_bytes` = {limit}")
@@ -251,7 +277,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::paths::ProjectPath;
 
     /// A tree whose reported length disagrees with its content, standing in
     /// for a live file that grows between a length check and a read.

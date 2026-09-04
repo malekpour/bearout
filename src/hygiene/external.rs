@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::Budget;
+use super::{Bounded, Budget};
 use crate::bootstrap::{Formatter, PATH_PLACEHOLDER};
 use crate::paths::ProjectPath;
 use crate::tree::ReadTree;
@@ -156,23 +156,24 @@ impl Workdir {
                     ));
                 }
             }
-            let (bytes, over) = tree
-                .read_bounded(support, budget.read_limit())
-                .map_err(|error| {
-                    format!(
+            let bytes = match budget.read(tree, support) {
+                Bounded::Within(bytes) => bytes,
+                Bounded::OverFileLimit => {
+                    return Err(super::over_limit(
+                        tree,
+                        support,
+                        &format!("support file `{support}` of formatter `{}`", formatter.name),
+                        limits.file_bytes,
+                    ));
+                }
+                Bounded::Exhausted(message) => return Err(message),
+                Bounded::Unreadable(error) => {
+                    return Err(format!(
                         "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
                         formatter.name
-                    )
-                })?;
-            budget.charge(support.as_str(), bytes.len() as u64)?;
-            if over {
-                return Err(super::over_limit(
-                    tree,
-                    support,
-                    &format!("support file `{support}` of formatter `{}`", formatter.name),
-                    limits.file_bytes,
-                ));
-            }
+                    ));
+                }
+            };
             let target = workdir.root.join("files").join(support.to_native());
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)

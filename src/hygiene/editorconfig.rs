@@ -20,7 +20,7 @@ use ec4rs::property::{Charset as EcCharset, EndOfLine, FinalNewline, TrimTrailin
 use ec4rs::rawvalue::RawValue;
 use ec4rs::{ConfigParser, ParseError, Properties, PropertyKey, PropertyValue, Section};
 
-use super::Budget;
+use super::{Bounded, Budget};
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
 use crate::tree::ReadTree;
@@ -250,23 +250,23 @@ impl<'a> Resolver<'a> {
                 ));
             }
         }
-        let (bytes, over) = match self.tree.read_bounded(file, self.budget.read_limit()) {
-            Ok(read) => read,
-            Err(error) => {
+        let bytes = match self.budget.read(self.tree, file) {
+            Bounded::Within(bytes) => bytes,
+            Bounded::OverFileLimit => {
+                let limit = self.budget.limits().file_bytes;
+                return Err(report(
+                    super::over_limit(self.tree, file, &format!("`{FILE_NAME}`"), limit),
+                    None,
+                ));
+            }
+            Bounded::Exhausted(message) => {
+                self.fatal.borrow_mut().get_or_insert(message);
+                return Err(report("hygiene input budget exhausted".to_owned(), None));
+            }
+            Bounded::Unreadable(error) => {
                 return Err(report(format!("cannot read `{FILE_NAME}`: {error}"), None));
             }
         };
-        if let Err(message) = self.budget.charge(file.as_str(), bytes.len() as u64) {
-            self.fatal.borrow_mut().get_or_insert(message);
-            return Err(report("hygiene input budget exhausted".to_owned(), None));
-        }
-        if over {
-            let limit = self.budget.limits().file_bytes;
-            return Err(report(
-                super::over_limit(self.tree, file, &format!("`{FILE_NAME}`"), limit),
-                None,
-            ));
-        }
         let mut parser = ConfigParser::new_buffered(Cursor::new(bytes))
             .map_err(|error| report(describe(&error), None))?;
         let is_root = parser.is_root;
