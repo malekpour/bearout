@@ -244,6 +244,8 @@ pub(crate) struct Location {
 pub(crate) struct Git {
     root: PathBuf,
     index_file: Option<OsString>,
+    /// Variables set for this runner's calls on top of the fixed ones.
+    extra: Vec<(&'static str, String)>,
 }
 
 impl Git {
@@ -260,6 +262,7 @@ impl Git {
         let mut git = Self {
             root: root.to_path_buf(),
             index_file: None,
+            extra: Vec::new(),
         };
         git.index_file = git.own_index_file();
         Ok(git)
@@ -296,6 +299,18 @@ impl Git {
         Self {
             root: self.root.clone(),
             index_file: Some(path.as_os_str().to_owned()),
+            extra: self.extra.clone(),
+        }
+    }
+
+    /// The same repository with one more variable set for every call.
+    pub(crate) fn with_variable(&self, name: &'static str, value: &str) -> Self {
+        let mut extra = self.extra.clone();
+        extra.push((name, value.to_owned()));
+        Self {
+            root: self.root.clone(),
+            index_file: self.index_file.clone(),
+            extra,
         }
     }
 
@@ -315,6 +330,9 @@ impl Git {
         }
         if let Some(index_file) = &self.index_file {
             command.env("GIT_INDEX_FILE", index_file);
+        }
+        for (name, value) in &self.extra {
+            command.env(name, value);
         }
         command
     }

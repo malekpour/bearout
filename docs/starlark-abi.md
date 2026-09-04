@@ -185,9 +185,9 @@ Each commit view:
 | `pending` | `True` for the pending commit. |
 | `parents` | Ordered full parent identities: `HEAD` and any `MERGE_HEAD` for the pending commit; empty for a root commit or an unborn branch. |
 | `merge` | `True` when there is more than one parent. |
-| `author`, `committer` | `{name, email, timestamp, timezone}` exactly as the commit object records them, without `.mailmap`; `committer` is `None` for the pending commit. |
+| `author`, `committer` | `{name, email, timestamp, timezone}` exactly as the commit object records them, without `.mailmap`. For the pending commit `committer` is `None`, and the author's `timestamp` and `timezone` are `None`: Git would only invent the current clock for them, and a fixture case supplies them only as explicit synthetic facts. |
 | `message` | The exact UTF-8 message, line boundaries and trailing content kept; comments and autosquash prefixes are not removed. |
-| `subject` | The first line of `message`. |
+| `subject` | The first logical line of `message` without its terminator; CRLF, LF, and a lone CR all end a line, and a finding's `line` counts the same logical lines. |
 | `changes` | List of `{repository_path, project_path, change, before, after}` sorted by repository path: `change` is `added`, `removed`, `modified`, or `type-changed`; `before` and `after` are `{mode, object, kind}` or `None`; `kind` is `file`, `executable`, `symlink`, or `gitlink`; `project_path` is `None` outside the Bearout project. |
 | `change_basis` | The first parent the changes are relative to, or `None` for the empty tree. |
 

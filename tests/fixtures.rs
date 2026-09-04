@@ -1685,7 +1685,7 @@ fn malformed_history_cases_are_fatal_for_the_suite() {
             "author identity",
         ),
         (
-            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nauthor_timezone = \"UTC\"\n",
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nauthor_timestamp = 1\nauthor_timezone = \"UTC\"\n",
             "invalid timezone",
         ),
         (
@@ -1746,4 +1746,71 @@ fn malformed_history_cases_are_fatal_for_the_suite() {
         ),
     );
     assert_suite_fatal(&test(&project), "above `limits.history_commit_bytes` = 8");
+}
+
+#[test]
+fn history_fixture_messages_keep_line_semantics_and_identity_shape() {
+    let project = history_project();
+    project.file(
+        common::ENTRY,
+        "def t(history):\n    commit = history[\"commits\"][0]\n    author = commit[\"author\"]\n    findings = [error(\"last\", commit = \"pending\", line = 2, code = \"last\")]\n    if author[\"timestamp\"] == None and author[\"timezone\"] == None:\n        findings.append(warning(\"no time\", commit = \"pending\", code = \"no-time\"))\n    else:\n        findings.append(warning(\"%d %s\" % (author[\"timestamp\"], author[\"timezone\"]), commit = \"pending\", code = \"time\"))\n    findings.append(warning(commit[\"subject\"], commit = \"pending\", code = \"subject\"))\n    return findings\nhistory_check(\"t\", t)\n",
+    );
+    let case = |name: &str, message: &str, extra: &str, expectations: &str| {
+        format!(
+            "[[cases]]\nname = \"{name}\"\nexpect = \"diagnostics\"\n[cases.history]\nkind = \"message\"\nmessage = \"{message}\"\nauthor_name = \"A\"\nauthor_email = \"a@example.test\"\n{extra}\n{expectations}\n"
+        )
+    };
+    let time_free =
+        "[[cases.diagnostics]]\ncode = \"B033\"\ncommit = \"pending\"\nrule = \"no-time\"\n";
+    project.file(
+        FIXTURE_FILE,
+        &format!(
+            "{}{}{}{}",
+            case(
+                "crlf lines and no invented time",
+                "subject\\r\\nsecond\\r\\n",
+                "",
+                &format!("[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nline = 2\nrule = \"last\"\n{time_free}[[cases.diagnostics]]\ncode = \"B033\"\ncommit = \"pending\"\nrule = \"subject\"\nmessage = \"history check `t`: subject\"\n")
+            ),
+            case(
+                "cr only lines",
+                "subject\\rsecond",
+                "",
+                &format!("[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nline = 2\nrule = \"last\"\n{time_free}[[cases.diagnostics]]\ncode = \"B033\"\ncommit = \"pending\"\nrule = \"subject\"\nmessage = \"history check `t`: subject\"\n")
+            ),
+            case(
+                "one line refuses line two",
+                "subject\\r\\n",
+                "",
+                &format!("[[cases.diagnostics]]\ncode = \"B014\"\npath = \"bearout.star\"\n{time_free}[[cases.diagnostics]]\ncode = \"B033\"\ncommit = \"pending\"\nrule = \"subject\"\n")
+            ),
+            case(
+                "explicit synthetic time",
+                "subject\\nsecond",
+                "author_timestamp = 1700000000\nauthor_timezone = \"+0200\"",
+                "[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nline = 2\nrule = \"last\"\n[[cases.diagnostics]]\ncode = \"B033\"\ncommit = \"pending\"\nrule = \"time\"\nmessage = \"history check `t`: 1700000000 +0200\"\n[[cases.diagnostics]]\ncode = \"B033\"\ncommit = \"pending\"\nrule = \"subject\"\n"
+            ),
+        ),
+    );
+    assert_suite_ok(&test(&project));
+    // A timestamp without a timezone, or the reverse, is refused.
+    for extra in ["author_timestamp = 5", "author_timezone = \"+0000\""] {
+        project.file(FIXTURE_FILE, &case("half", "x", extra, ""));
+        assert_suite_fatal(&test(&project), "given together or not at all");
+    }
+    // A message within the per-commit limit but above the total budget.
+    project.file(
+        "bearout.toml",
+        &bootstrap("[limits]\nhistory_commit_bytes = 100\nhistory_bytes = 8\n"),
+    );
+    project.file(
+        FIXTURE_FILE,
+        &case(
+            "too big for the budget",
+            "feat: twenty bytes\\n",
+            "",
+            "[[cases.diagnostics]]\ncode = \"B032\"\n",
+        ),
+    );
+    assert_suite_fatal(&test(&project), "above `limits.history_bytes` = 8");
 }

@@ -115,19 +115,25 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Policy comes from the resolved head's tree or the captured index, never
   the working tree, and only history checks run. The entry module
   registers `history_check(name, function)`; the check receives an
-  immutable history view with raw identities (no `.mailmap`), byte-exact
-  messages, ordered parents, and changes against the first parent (or the
-  empty tree for a root) with exact modes and object identities and no
-  rename detection. `error()` and `warning()` accept `commit=` for a key
+  immutable history view with raw identities (no `.mailmap`; a pending
+  commit's author has no timestamp or timezone, because Git would only
+  invent the current clock), byte-exact messages whose logical lines end
+  at CRLF, LF, or a lone CR, ordered parents (an unborn branch only when
+  Git proves it, and a `MERGE_HEAD` that must be a regular file naming
+  existing commits), and changes against the first parent (or the empty
+  tree for a root) with exact modes and object identities and no rename
+  detection. `error()` and `warning()` accept `commit=` for a key
   of the view or nothing for a range-wide finding; new codes B032 and
   B033 appear only in the distinct history report, where any finding
   exits 1 and an unresolvable revision, a missing object, or a shallow
   boundary inside the range is fatal (exit 2). New limits
   `limits.history_commits`, `limits.history_changes`,
   `limits.history_commit_bytes`, and `limits.history_bytes`. Fixture
-  cases may supply a synthetic pending message with `[cases.history]` and
-  expect findings by `commit`. Conventional Commits and DCO sign-offs are
-  policies a repository supplies; the `commit-policy` sample shows one.
+  cases may supply a synthetic pending message with `[cases.history]`,
+  bounded by both history byte limits, with author time only as explicit
+  synthetic facts, and expect findings by `commit`. Conventional Commits
+  and DCO sign-offs are policies a repository supplies; the
+  `commit-policy` sample shows one.
   In the library: `bearout::history`, `HistoryMode`, `HistoryReport`,
   `HistoryDiagnostic`, and `HistoryTarget`.
 

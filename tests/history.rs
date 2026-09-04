@@ -928,7 +928,8 @@ fn the_pending_commit_is_described_from_the_captured_index() {
     let ident = pending_author(&project);
     assert_eq!(commit["author"]["name"], ident.0);
     assert_eq!(commit["author"]["email"], ident.1);
-    assert_eq!(commit["author"]["timezone"].as_str().unwrap().len(), 5);
+    assert!(commit["author"]["timestamp"].is_null(), "no invented time");
+    assert!(commit["author"]["timezone"].is_null());
     let rendered = report.diagnostics[0].to_string();
     let json = rendered
         .strip_prefix("range:B033[facts]: history check `facts`: ")
@@ -1402,4 +1403,236 @@ fn finding_targets_are_validated_against_the_view() {
         "{:?}",
         report.diagnostics
     );
+}
+
+// ---- hardening --------------------------------------------------------
+
+#[test]
+fn pending_parents_fail_closed_on_anything_but_a_proven_unborn_branch() {
+    let project = facts_project();
+    let head = project.git(&["rev-parse", "HEAD"]);
+    let tree = project.git(&["rev-parse", "HEAD^{tree}"]);
+    let git_dir = std::path::PathBuf::from(project.git(&["rev-parse", "--absolute-git-dir"]));
+    let file = message_file(&project, b"chore: pending\n");
+    let merge_head = git_dir.join("MERGE_HEAD");
+
+    // MERGE_HEAD, when present, must be a regular readable file of full
+    // commit identities that exist.
+    let missing = "0000000000000000000000000000000000000001";
+    for (content, expected) in [
+        ("garbage\n", "is not a full commit identity"),
+        ("abc123\n", "is not a full commit identity"),
+        (
+            &format!("{missing}\n"),
+            "which is not an object of this repository",
+        ),
+        (&format!("{tree}\n"), "a tree rather than a commit"),
+        ("", "MERGE_HEAD exists but names no commit"),
+        ("\n\n", "MERGE_HEAD exists but names no commit"),
+    ] {
+        std::fs::write(&merge_head, content).unwrap();
+        assert_history_fatal(&message(&project, &file), expected);
+    }
+    std::fs::write(&merge_head, b"\xff\xfe").unwrap();
+    assert_history_fatal(&message(&project, &file), "MERGE_HEAD is not valid UTF-8");
+    std::fs::remove_file(&merge_head).unwrap();
+    std::fs::create_dir(&merge_head).unwrap();
+    assert_history_fatal(
+        &message(&project, &file),
+        "MERGE_HEAD is not a regular file",
+    );
+    std::fs::remove_dir(&merge_head).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::os::unix::fs::symlink("HEAD", &merge_head).unwrap();
+        assert_history_fatal(&message(&project, &file), "MERGE_HEAD is a symbolic link");
+        std::fs::remove_file(&merge_head).unwrap();
+        std::fs::write(&merge_head, format!("{head}\n")).unwrap();
+        std::fs::set_permissions(&merge_head, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&merge_head).is_err() {
+            assert_history_fatal(&message(&project, &file), "cannot read MERGE_HEAD");
+        }
+        std::fs::set_permissions(&merge_head, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_file(&merge_head).unwrap();
+    }
+    // A well-formed MERGE_HEAD naming a real commit is a merge parent.
+    std::fs::write(&merge_head, format!("{head}\n")).unwrap();
+    let report = message(&project, &file);
+    assert_captured(&report);
+    assert_eq!(
+        commits(&report)[0]["parents"],
+        serde_json::json!([head, head])
+    );
+    assert_eq!(commits(&report)[0]["merge"], true);
+    std::fs::remove_file(&merge_head).unwrap();
+
+    // HEAD: a detached identity that names nothing, a HEAD naming a tree,
+    // corrupt content, and a missing file are all fatal.
+    let head_file = git_dir.join("HEAD");
+    let original = std::fs::read(&head_file).unwrap();
+    std::fs::write(&head_file, format!("{missing}\n")).unwrap();
+    assert_history_fatal(&message(&project, &file), "HEAD names");
+    std::fs::write(&head_file, format!("{tree}\n")).unwrap();
+    assert_history_fatal(&message(&project, &file), "a tree rather than a commit");
+    std::fs::write(&head_file, "garbage\n").unwrap();
+    assert!(
+        message(&project, &file).fatal.is_some(),
+        "a corrupt HEAD is fatal"
+    );
+    std::fs::remove_file(&head_file).unwrap();
+    assert!(
+        message(&project, &file).fatal.is_some(),
+        "a missing HEAD is fatal"
+    );
+    // A symbolic HEAD to a branch that exists but is unreadable is not an
+    // unborn branch.
+    std::fs::write(&head_file, "ref: refs/heads/main\n").unwrap();
+    let main_ref = git_dir.join("refs/heads/main");
+    let packed = git_dir.join("packed-refs");
+    let had_packed = packed.exists();
+    let main_original = std::fs::read(&main_ref).ok();
+    std::fs::write(&main_ref, format!("{missing}\n")).unwrap();
+    let report = message(&project, &file);
+    assert!(
+        report.fatal.is_some(),
+        "a branch naming a missing object is fatal"
+    );
+    if let Some(bytes) = main_original {
+        std::fs::write(&main_ref, bytes).unwrap();
+    }
+    assert!(!had_packed || packed.exists());
+    std::fs::write(&head_file, original).unwrap();
+    assert_captured(&message(&project, &file));
+
+    // Only a symbolic HEAD to a branch that does not exist is unborn.
+    std::fs::write(&head_file, "ref: refs/heads/unborn\n").unwrap();
+    let report = message(&project, &file);
+    assert_captured(&report);
+    assert!(
+        commits(&report)[0]["parents"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(commits(&report)[0]["change_basis"].is_null());
+    std::fs::write(&head_file, "ref: refs/heads/main\n").unwrap();
+}
+
+#[test]
+fn pending_identities_carry_no_time_and_runs_agree_across_the_clock() {
+    let project = facts_project();
+    let file = message_file(&project, b"feat: timeless\n");
+    let first = message(&project, &file);
+    assert_captured(&first);
+    let commit = &commits(&first)[0];
+    assert!(commit["author"]["timestamp"].is_null());
+    assert!(commit["author"]["timezone"].is_null());
+    let (name, email) = pending_author(&project);
+    assert_eq!(commit["author"]["name"], name);
+    assert_eq!(commit["author"]["email"], email);
+    // Across a wall-clock second the view, and so the report, is identical.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let second = message(&project, &file);
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&second).unwrap()
+    );
+    // Committed identities keep their exact time.
+    let report = range(&project, None, None);
+    let committed = &commits(&report)[0];
+    assert!(committed["author"]["timestamp"].is_i64());
+    assert_eq!(committed["author"]["timezone"].as_str().unwrap().len(), 5);
+    assert!(committed["committer"]["timestamp"].is_i64());
+}
+
+#[test]
+fn message_lines_end_at_crlf_lf_and_lone_cr() {
+    let entry = "def t(history):\n    key = history[\"commits\"][0][\"key\"]\n    count = len(history[\"commits\"][0][\"message\"].splitlines())\n    return [error(\"last\", commit = key, line = count), warning(history[\"commits\"][0][\"subject\"], commit = key)]\nhistory_check(\"t\", t)\n";
+    let project = project_with(entry);
+    project.commit_all("chore: initial");
+    let commit_with = |text: &str| {
+        let status = common::git_command(project.path())
+            .args([
+                "commit",
+                "-q",
+                "--allow-empty",
+                "--cleanup=verbatim",
+                "-F",
+                "-",
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(text.as_bytes())
+                    .unwrap();
+                child.wait()
+            })
+            .unwrap();
+        assert!(status.success());
+    };
+    for (text, count, subject) in [
+        ("feat: crlf\r\n\r\nbody\r\n", 3, "feat: crlf"),
+        ("feat: cr\rsecond\rthird", 3, "feat: cr"),
+        ("feat: mixed\n\r\nthree\rfour\n", 4, "feat: mixed"),
+    ] {
+        commit_with(text);
+        let report = range(&project, Some("HEAD~1"), None);
+        assert!(report.fatal.is_none(), "{:?}", report.fatal);
+        let head = project.git(&["rev-parse", "HEAD"]);
+        let rendered = lines(&report);
+        assert!(
+            rendered.contains(&format!(
+                "commit {head}:{count}:B032[t]: history check `t`: last"
+            )),
+            "{text:?}: {rendered:?}"
+        );
+        assert!(
+            rendered.contains(&format!(
+                "commit {head}:B033[t]: history check `t`: {subject}"
+            )),
+            "{text:?}: {rendered:?}"
+        );
+        // One past the last logical line is refused.
+        project.file(
+            common::ENTRY,
+            &entry.replace("line = count", &format!("line = {}", count + 1)),
+        );
+        project.commit_all("chore: policy");
+        commit_with(text);
+        let report = range(&project, Some("HEAD~1"), None);
+        assert!(
+            lines(&report).iter().any(|line| line.contains(&format!(
+                "finding line {} is beyond the {count} line(s)",
+                count + 1
+            ))),
+            "{text:?}: {:?}",
+            lines(&report)
+        );
+        project.file(common::ENTRY, entry);
+        project.commit_all("chore: policy back");
+    }
+    // The same for a pending message file; the bytes stay exact.
+    let file = message_file(&project, b"feat: pending crlf\r\n\r\nbody\r\n");
+    let report = message(&project, &file);
+    assert!(report.fatal.is_none(), "{:?}", report.fatal);
+    let rendered = lines(&report);
+    assert!(
+        rendered.contains(&"commit pending:3:B032[t]: history check `t`: last".to_owned()),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered
+            .contains(&"commit pending:B033[t]: history check `t`: feat: pending crlf".to_owned())
+    );
+    let project = facts_project();
+    let file = message_file(&project, b"feat: cr only\rbody");
+    let report = message(&project, &file);
+    let commit = &commits(&report)[0];
+    assert_eq!(commit["message"], "feat: cr only\rbody");
+    assert_eq!(commit["subject"], "feat: cr only");
 }

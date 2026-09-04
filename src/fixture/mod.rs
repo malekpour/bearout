@@ -385,11 +385,12 @@ fn parse_case(
 
 /// `[cases.history]`: a synthetic pending commit. `kind` must be
 /// `message`; `message`, `author_name`, and `author_email` are required;
-/// `author_timestamp` (default 0) and `author_timezone` (default
-/// `+0000`) complete the raw identity; `parents` lists full commit
-/// identities and `merge`, when given, must agree with their number. The
-/// view is built by the same constructor as the real pending-message
-/// command: no tree, no committer, no changes.
+/// `author_timestamp` and `author_timezone` are fixed synthetic facts
+/// given together or not at all, and absent they are `None` exactly as
+/// for a real pending commit; `parents` lists full commit identities and
+/// `merge`, when given, must agree with their number. The view is built
+/// by the same constructor as the real pending-message command: no tree,
+/// no committer, no changes.
 fn parse_history(table: &dyn TableLike, limits: &Limits) -> Result<History, String> {
     reject_unknown(
         table,
@@ -421,6 +422,13 @@ fn parse_history(table: &dyn TableLike, limits: &Limits) -> Result<History, Stri
             limits.history_commit_bytes
         ));
     }
+    if message.len() as u64 > limits.history_bytes {
+        return Err(format!(
+            "`message` is {} bytes, above `limits.history_bytes` = {}",
+            message.len(),
+            limits.history_bytes
+        ));
+    }
     if message.contains('\0') {
         return Err("`message` must not contain a NUL character".to_owned());
     }
@@ -429,15 +437,34 @@ fn parse_history(table: &dyn TableLike, limits: &Limits) -> Result<History, Stri
     let email =
         string(table, "author_email")?.ok_or_else(|| "`author_email` is required".to_owned())?;
     let timestamp = match table.get("author_timestamp") {
-        None => 0,
-        Some(item) => item
-            .as_integer()
-            .ok_or_else(|| "`author_timestamp` must be an integer".to_owned())?,
+        None => None,
+        Some(item) => Some(
+            item.as_integer()
+                .ok_or_else(|| "`author_timestamp` must be an integer".to_owned())?,
+        ),
     };
-    let timezone = string(table, "author_timezone")?.unwrap_or("+0000");
-    let identity = format!("{name} <{email}> {timestamp} {timezone}");
-    let author =
+    let timezone = string(table, "author_timezone")?;
+    if timestamp.is_some() != timezone.is_some() {
+        return Err(
+            "`author_timestamp` and `author_timezone` are fixed synthetic facts given together or not at all"
+                .to_owned(),
+        );
+    }
+    // The identity line is parsed exactly as a commit object's would be;
+    // the placeholder time is discarded when none was given.
+    let identity = format!(
+        "{name} <{email}> {} {}",
+        timestamp.unwrap_or(0),
+        timezone.unwrap_or("+0000")
+    );
+    let parsed =
         capture::parse_identity(&identity).map_err(|problem| format!("author {problem}"))?;
+    let author = Identity {
+        name: parsed.name,
+        email: parsed.email,
+        timestamp: timestamp.and(parsed.timestamp),
+        timezone: timezone.and(parsed.timezone),
+    };
     let parents = match table.get("parents") {
         None => Vec::new(),
         Some(item) => item
@@ -479,12 +506,7 @@ fn parse_history(table: &dyn TableLike, limits: &Limits) -> Result<History, Stri
             tree: None,
             change_basis: parents.first().cloned(),
             parents,
-            author: Identity {
-                name: author.name,
-                email: author.email,
-                timestamp: author.timestamp,
-                timezone: author.timezone,
-            },
+            author,
             committer: None,
             message: message.to_owned(),
             changes: Vec::new(),

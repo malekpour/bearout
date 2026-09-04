@@ -514,9 +514,14 @@ non-linked file inside the repository's resolved Git directory (the
 linked worktree's own directory in a worktree), bounded before it is
 read, valid UTF-8, and free of NUL; comments, scissors lines, autosquash
 prefixes, and blank lines reach policy exactly as Git supplied them. The
-author is the identity Git would record, the parents are `HEAD` and any
-merge in progress, and the staged changes come from the same captured
-index that supplies the policy. An empty message is an input to policy.
+author's name and email are what Git would record, with no timestamp or
+timezone, since Git would only invent the current clock for a pending
+commit; the parents are `HEAD` and any merge in progress, established
+only from a `HEAD` and a `MERGE_HEAD` Git can read and prove (an unborn
+branch is recognized only as a symbolic `HEAD` to a branch that does not
+exist yet); and the staged changes come from the same captured index
+that supplies the policy. An empty message is an input to policy, and
+message lines end at CRLF, LF, or a lone CR alike.
 
 Authority is explicit: a range reads `bearout.toml`, the entry module,
 and every loaded module from the resolved head's tree; a pending commit

@@ -57,13 +57,15 @@ pub struct Reference {
     pub id: ObjectId,
 }
 
-/// A raw Git identity line: `Name <email> <timestamp> <timezone>`.
+/// A raw Git identity line: `Name <email> <timestamp> <timezone>`. A
+/// committed identity carries its exact time; a pending identity has
+/// none, because Git would only invent the current clock for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub name: String,
     pub email: String,
-    pub timestamp: i64,
-    pub timezone: String,
+    pub timestamp: Option<i64>,
+    pub timezone: Option<String>,
 }
 
 /// One side of a changed path.
@@ -137,22 +139,49 @@ impl Commit {
         self.parents.len() > 1
     }
 
-    /// The first line of the message, without its terminator.
+    /// The first logical line of the message, without its terminator.
     #[must_use]
     pub fn subject(&self) -> &str {
-        self.message.split('\n').next().unwrap_or_default()
+        logical_lines(&self.message)
+            .first()
+            .copied()
+            .unwrap_or_default()
     }
 
-    /// The number of lines a message target may name.
+    /// The number of logical lines a message target may name.
     #[must_use]
     pub fn line_count(&self) -> u32 {
-        if self.message.is_empty() {
-            return 0;
-        }
-        let lines = self.message.split('\n').count();
-        let trailing = usize::from(self.message.ends_with('\n'));
-        u32::try_from(lines - trailing).unwrap_or(u32::MAX)
+        u32::try_from(logical_lines(&self.message).len()).unwrap_or(u32::MAX)
     }
+}
+
+/// The logical lines of a message, with CRLF, LF, and a lone CR all
+/// ending a line, as Bearout's text handling reads them; a terminator at
+/// the very end closes the last line rather than opening an empty one.
+/// The message itself is never changed.
+#[must_use]
+pub fn logical_lines(message: &str) -> Vec<&str> {
+    let bytes = message.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let width = match bytes[index] {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => 2,
+            b'\r' | b'\n' => 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        lines.push(&message[start..index]);
+        index += width;
+        start = index;
+    }
+    if start < bytes.len() {
+        lines.push(&message[start..]);
+    }
+    lines
 }
 
 /// The captured facts of one run.
@@ -496,6 +525,93 @@ impl Opened {
     }
 }
 
+/// The commit `HEAD` names, or `None` only when Git positively proves an
+/// unborn branch: `HEAD` is a symbolic reference to a branch that does
+/// not exist yet. A `HEAD` that names an object which is missing or not
+/// a commit, a detached `HEAD` that cannot be read, and every other
+/// failure are errors.
+fn pending_head(git: &Git) -> Result<Option<ObjectId>, String> {
+    if let Ok(text) = git.line(&["rev-parse", "--verify", "-q", "HEAD"]) {
+        let id = ObjectId::parse(&text)?;
+        return match git.object_type(&id) {
+            Ok(object_type) if object_type == "commit" => Ok(Some(id)),
+            Ok(other) => Err(format!("HEAD names {id}, a {other} rather than a commit")),
+            Err(_) => Err(format!(
+                "HEAD names {id}, which is not an object of this repository"
+            )),
+        };
+    }
+    let target = git
+        .line(&["symbolic-ref", "-q", "HEAD"])
+        .map_err(|error| format!("cannot resolve HEAD: {error}"))?;
+    if target.is_empty() || !target.starts_with("refs/") {
+        return Err(format!(
+            "cannot resolve HEAD: `{target}` is not a reference"
+        ));
+    }
+    match git.line(&["show-ref", "--verify", "-q", "--", &target]) {
+        Ok(_) => Err(format!(
+            "cannot resolve HEAD: `{target}` exists but does not name a commit"
+        )),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The parents a merge in progress adds: every line of `MERGE_HEAD`,
+/// which, when it exists, must be a regular readable file holding full
+/// identities of commits this repository has. Nothing about it is
+/// ignored silently.
+fn merge_heads(git: &Git, budget: &mut Budget) -> Result<Vec<ObjectId>, String> {
+    let merge_head = git_path(git, "MERGE_HEAD")?;
+    let metadata = match std::fs::symlink_metadata(&merge_head) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("cannot inspect MERGE_HEAD: {error}")),
+    };
+    if metadata.is_symlink() {
+        return Err(
+            "MERGE_HEAD is a symbolic link; merge state is read only from a regular file"
+                .to_owned(),
+        );
+    }
+    if !metadata.is_file() {
+        return Err("MERGE_HEAD is not a regular file".to_owned());
+    }
+    let bytes = read_file_within(&merge_head, budget.listing_limit(), "MERGE_HEAD")?;
+    budget.charge(bytes.len() as u64, "MERGE_HEAD")?;
+    let text = String::from_utf8(bytes).map_err(|_| "MERGE_HEAD is not valid UTF-8".to_owned())?;
+    let mut parents = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if !matches!(line.len(), 40 | 64) {
+            return Err(format!(
+                "MERGE_HEAD holds `{line}`, which is not a full commit identity"
+            ));
+        }
+        let id = ObjectId::parse(line).map_err(|error| format!("MERGE_HEAD: {error}"))?;
+        match git.object_type(&id) {
+            Ok(object_type) if object_type == "commit" => {}
+            Ok(other) => {
+                return Err(format!(
+                    "MERGE_HEAD names {id}, a {other} rather than a commit"
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "MERGE_HEAD names {id}, which is not an object of this repository"
+                ));
+            }
+        }
+        parents.push(id);
+    }
+    if parents.is_empty() {
+        return Err("MERGE_HEAD exists but names no commit".to_owned());
+    }
+    Ok(parents)
+}
+
 /// The commits at which this repository's history is cut off, from the
 /// `shallow` file of its Git directory; empty for a complete repository.
 fn shallow_boundaries(git: &Git, budget: &mut Budget) -> Result<BTreeSet<ObjectId>, String> {
@@ -708,10 +824,15 @@ pub fn parse_identity(text: &str) -> Result<Identity, String> {
     Ok(Identity {
         name: name.to_owned(),
         email: email.to_owned(),
-        timestamp,
-        timezone: timezone.to_owned(),
+        timestamp: Some(timestamp),
+        timezone: Some(timezone.to_owned()),
     })
 }
+
+/// A fixed, obviously synthetic author date for asking Git which name
+/// and email it would record, so that the answer never depends on the
+/// host clock; the date itself is discarded.
+const SYNTHETIC_AUTHOR_DATE: &str = "@0 +0000";
 
 /// Parse `--raw -z --full-index --no-renames` records into changes sorted
 /// by repository path. Every path must be UTF-8 and portable.
@@ -858,10 +979,7 @@ impl Opened {
         // The staged changes of the captured index against HEAD's tree, or
         // the empty tree on an unborn branch.
         let frozen = git.with_index(snapshot.path());
-        let head = match git.line(&["rev-parse", "--verify", "-q", "HEAD^{commit}"]) {
-            Ok(text) => Some(ObjectId::parse(&text)?),
-            Err(_) => None,
-        };
+        let head = pending_head(git)?;
         let basis = match &head {
             Some(head) => git
                 .line(&["rev-parse", "--verify", "-q", &format!("{head}^{{tree}}")])
@@ -897,23 +1015,23 @@ impl Opened {
         // Parents: HEAD, then every MERGE_HEAD of a merge in progress.
         let mut parents = Vec::new();
         parents.extend(head.clone());
-        let merge_head = git_path(git, "MERGE_HEAD")?;
-        if std::fs::symlink_metadata(&merge_head).is_ok_and(|metadata| metadata.is_file()) {
-            let bytes = read_file_within(&merge_head, budget.listing_limit(), "MERGE_HEAD")?;
-            budget.charge(bytes.len() as u64, "MERGE_HEAD")?;
-            let text =
-                String::from_utf8(bytes).map_err(|_| "MERGE_HEAD is not valid UTF-8".to_owned())?;
-            for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-                parents.push(ObjectId::parse(line)?);
-            }
-        }
+        parents.extend(merge_heads(git, &mut budget)?);
 
-        // The author Git would record, from the same hardened environment.
+        // The name and email Git would record, asked with a fixed author
+        // date so the host clock never reaches the view; the date is
+        // discarded and the pending identity carries no time.
         let author = git
+            .with_variable("GIT_AUTHOR_DATE", SYNTHETIC_AUTHOR_DATE)
             .line(&["var", "GIT_AUTHOR_IDENT"])
             .map_err(|error| format!("cannot determine the pending author: {error}"))?;
         let author =
             parse_identity(&author).map_err(|problem| format!("pending author {problem}"))?;
+        let author = Identity {
+            name: author.name,
+            email: author.email,
+            timestamp: None,
+            timezone: None,
+        };
 
         Ok(History {
             mode: Mode::Message,
@@ -944,12 +1062,12 @@ mod tests {
         let identity = parse_identity("Ada  Lovelace <ada@example.test> 1700000000 +0200").unwrap();
         assert_eq!(identity.name, "Ada  Lovelace", "inner whitespace is kept");
         assert_eq!(identity.email, "ada@example.test");
-        assert_eq!(identity.timestamp, 1_700_000_000);
-        assert_eq!(identity.timezone, "+0200");
+        assert_eq!(identity.timestamp, Some(1_700_000_000));
+        assert_eq!(identity.timezone.as_deref(), Some("+0200"));
         let negative = parse_identity("x <x@y> -5 -0930").unwrap();
         assert_eq!(
-            (negative.timestamp, negative.timezone.as_str()),
-            (-5, "-0930")
+            (negative.timestamp, negative.timezone.as_deref()),
+            (Some(-5), Some("-0930"))
         );
         let empty = parse_identity("<nobody@example.test> 0 +0000").unwrap();
         assert_eq!(empty.name, "");
@@ -1081,5 +1199,16 @@ mod tests {
         assert_eq!(commit("one\n\nthree\n").line_count(), 3);
         assert_eq!(commit("one\n\nthree\n\n").line_count(), 4);
         assert_eq!(commit("subject\nbody").subject(), "subject");
+        // CRLF and a lone CR end lines too; the message keeps its bytes.
+        let crlf = commit("subject\r\n\r\nbody\r\n");
+        assert_eq!(crlf.subject(), "subject");
+        assert_eq!(crlf.line_count(), 3);
+        assert_eq!(crlf.message, "subject\r\n\r\nbody\r\n");
+        let cr = commit("subject\rsecond\rthird");
+        assert_eq!(cr.subject(), "subject");
+        assert_eq!(cr.line_count(), 3);
+        assert_eq!(logical_lines("a\r\n\rb\n\nc"), ["a", "", "b", "", "c"]);
+        assert_eq!(logical_lines("\n"), [""]);
+        assert_eq!(logical_lines("\r\n\r\n"), ["", ""]);
     }
 }

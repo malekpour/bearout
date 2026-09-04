@@ -6,9 +6,11 @@
 //! `{revision, id}` or `None`), and `commits`, oldest first, each with
 //! `key` (the full identity, or `pending`), `id`, `pending`, `tree`,
 //! ordered `parents`, the derived `merge`, raw `author` and `committer`
-//! identities (`{name, email, timestamp, timezone}`, the committer `None`
-//! for a pending commit), the exact `message`, its first line as
-//! `subject`, `changes` sorted by repository path, and `change_basis`.
+//! identities (`{name, email, timestamp, timezone}`; for a pending commit
+//! the committer is `None` and the author's `timestamp` and `timezone`
+//! are `None`, since Git would only invent the current clock for them),
+//! the exact `message`, its first logical line as `subject`, `changes`
+//! sorted by repository path, and `change_basis`.
 //! Nothing here interprets a message: headers, trailers, sign-offs,
 //! breaking-change markers, and autosquash prefixes are the repository
 //! policy's to read with ordinary string operations.
@@ -165,7 +167,12 @@ mod tests {
                 pending: true,
                 tree: None,
                 parents: Vec::new(),
-                author: parse_identity("A <a@x> 1 +0000").unwrap(),
+                author: Identity {
+                    name: "A".to_owned(),
+                    email: "a@x".to_owned(),
+                    timestamp: None,
+                    timezone: None,
+                },
                 committer: None,
                 message: String::new(),
                 changes: Vec::new(),
@@ -174,6 +181,9 @@ mod tests {
         };
         let view = json(&pending);
         assert_eq!(view["kind"], "message");
+        assert!(view["commits"][0]["author"]["timestamp"].is_null());
+        assert!(view["commits"][0]["author"]["timezone"].is_null());
+        assert_eq!(view["commits"][0]["author"]["name"], "A");
         assert!(view["base"].is_null() && view["head"].is_null());
         let commit = &view["commits"][0];
         assert!(commit["id"].is_null());

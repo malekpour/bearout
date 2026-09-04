@@ -598,6 +598,31 @@ tree, or committer, `HEAD` and any `MERGE_HEAD` as parents, the exact
 message file, the author Git would record, and the staged changes of the
 captured index against `HEAD` or the empty tree on an unborn branch.
 
+**Committed and pending identities.** A committed identity is the
+object's own: name, email, Unix timestamp, and numeric offset, exactly as
+recorded. A pending identity has a name and an email but no timestamp
+and no timezone (`None`, JSON `null`), because Git would only invent the
+current clock for them: Bearout asks Git which name and email it would
+record with a fixed synthetic author date and discards the date, so
+identical pending checks agree byte for byte across time and the host
+clock never reaches Starlark.
+
+**Pending parents.** `HEAD` is unborn only when Git positively proves
+it: `HEAD` is a symbolic reference to a branch that does not exist yet.
+A `HEAD` naming an object the repository lacks or that is not a commit,
+a detached `HEAD` that cannot be read, a corrupt or missing `HEAD`, and a
+branch that exists but does not name a commit are all fatal. When
+`MERGE_HEAD` exists it must be a regular, non-linked, readable file whose
+non-empty lines are full identities of commits the repository has;
+metadata errors, a directory, a link, malformed contents, a missing
+object, a non-commit, and an empty file are all fatal.
+
+**Message lines.** A message is kept byte for byte. Its logical lines,
+for the `subject` and for a finding's `line`, end at CRLF, LF, or a lone
+CR, as Bearout's text handling reads them; a terminator at the very end
+closes the last line rather than opening an empty one, and the subject is
+the first logical line without its terminator.
+
 **Message file.** Exactly the named file is read: a regular file, not a
 link, whose canonical location lies inside the repository's resolved Git
 directory (a linked worktree's own directory in a worktree), no larger
@@ -645,9 +670,12 @@ facts are captured in full before policy runs.
 **Fixtures.** A fixture case may replace mutations with `[cases.history]`,
 a synthetic pending commit built by the same constructor and admitted by
 the same rules as the real command, checked by the registered history
-checks alone, with no Git call and no external program. It is exclusive
-with mutations and a comparison baseline, bounded by the fixture and
-history limits, and matched by the unchanged exact and contains
+checks alone, with no Git call and no external program. Its author has
+no timestamp or timezone unless the case supplies both as fixed
+synthetic facts; nothing is invented. It is exclusive with mutations and
+a comparison baseline, bounded by the fixture limits and by
+`limits.history_commit_bytes` and `limits.history_bytes` alike, and
+matched by the unchanged exact and contains
 semantics with `commit` as a structured expectation field. Range
 topology and changed-path policy stay covered by Bearout's own
 synthetic-repository tests; a declarative history DAG fixture is deferred.
