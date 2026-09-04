@@ -156,25 +156,24 @@ impl Workdir {
                     ));
                 }
             }
-            let len = tree.file_len(support).map_err(|error| {
-                format!(
-                    "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
-                    formatter.name
-                )
-            })?;
-            if len > limits.file_bytes {
-                return Err(format!(
-                    "support file `{support}` of formatter `{}` is {len} bytes, above `limits.file_bytes` = {}",
-                    formatter.name, limits.file_bytes
-                ));
-            }
-            budget.charge(support.as_str(), len)?;
-            let bytes = tree.read(support).map_err(|error| {
-                format!(
-                    "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
-                    formatter.name
-                )
-            })?;
+            let bytes = match tree.read_bounded(support, limits.file_bytes) {
+                Ok((_, true)) => {
+                    return Err(super::over_limit(
+                        tree,
+                        support,
+                        &format!("support file `{support}` of formatter `{}`", formatter.name),
+                        limits.file_bytes,
+                    ));
+                }
+                Ok((bytes, false)) => bytes,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
+                        formatter.name
+                    ));
+                }
+            };
+            budget.charge(support.as_str(), bytes.len() as u64)?;
             let target = workdir.root.join("files").join(support.to_native());
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)
@@ -196,6 +195,68 @@ impl Workdir {
 impl Drop for Workdir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// How the program's run ended, as the wait loop saw it. The program is
+/// dead and reaped whichever variant this is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ended {
+    /// The program exited on its own with this status code, `None` when
+    /// it was killed by a signal.
+    Exited(Option<i32>),
+    /// Bearout killed it because a reader raised the stop flag.
+    Stopped,
+    /// Bearout killed it at the timeout.
+    TimedOut(Duration),
+    /// Waiting for it failed.
+    WaitFailed(String),
+}
+
+/// The outcome of one pipe reader: the bytes and whether more remained.
+type Stream = io::Result<(Vec<u8>, bool)>;
+
+/// Decide the result once the program is dead and every stream is
+/// accounted for, in a fixed order of precedence: an unreadable or
+/// overflowing standard output first, then an unreadable standard error,
+/// then how the run ended. A successful exit never hides a stream
+/// failure, and a stop never masquerades as an overflow.
+fn classify(
+    ended: &Ended,
+    output: Stream,
+    errors: &Stream,
+    written: &io::Result<()>,
+    bound: usize,
+) -> Result<Vec<u8>, Failure> {
+    let (output, truncated) = match output {
+        Ok(read) => read,
+        Err(error) => {
+            return Err(Failure::Io(format!("cannot read standard output: {error}")));
+        }
+    };
+    if truncated {
+        return Err(Failure::Oversized(bound));
+    }
+    let detail = match errors {
+        Ok((bytes, _)) => crate::git::sanitize(bytes),
+        Err(error) => {
+            return Err(Failure::Io(format!("cannot read standard error: {error}")));
+        }
+    };
+    if let Err(error) = written {
+        return Err(Failure::Io(format!("cannot write standard input: {error}")));
+    }
+    match ended {
+        Ended::Exited(Some(0)) => Ok(output),
+        Ended::Exited(Some(code)) => Err(Failure::Status(*code, detail)),
+        Ended::Exited(None) => Err(Failure::Abnormal(detail)),
+        Ended::TimedOut(limit) => Err(Failure::Timeout(*limit)),
+        Ended::WaitFailed(error) => {
+            Err(Failure::Io(format!("cannot wait for the program: {error}")))
+        }
+        Ended::Stopped => Err(Failure::Abnormal(format!(
+            "stopped without a stream failure: {detail}"
+        ))),
     }
 }
 
@@ -252,8 +313,10 @@ pub fn run(
         .saturating_mul(4)
         .saturating_add(OUTPUT_HEADROOM);
     // Readers raise `stop` when the output overflows or a pipe fails, so
-    // the wait loop kills the program promptly instead of waiting for the
-    // timeout while it blocks on a pipe nobody drains.
+    // the wait loop tears the program down promptly instead of waiting for
+    // the timeout while it blocks on a pipe nobody drains. The flag only
+    // triggers the teardown; the reason is classified from the readers'
+    // own results afterwards.
     let stop = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().expect("stdout is piped");
     let stdout_stop = Arc::clone(&stop);
@@ -277,25 +340,25 @@ pub fn run(
     // Every path out of this loop leaves the program dead and reaped, so
     // the pipe threads always reach end of stream before they are joined.
     let deadline = Instant::now() + formatter.timeout;
-    let status = loop {
+    let ended = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
+            Ok(Some(status)) => break Ended::Exited(status.code()),
             Ok(None) => {}
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break Err(Failure::Io(format!("cannot wait for the program: {error}")));
+                break Ended::WaitFailed(error.to_string());
             }
         }
         if stop.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            break Err(Failure::Oversized(bound));
+            break Ended::Stopped;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            break Err(Failure::Timeout(formatter.timeout));
+            break Ended::TimedOut(formatter.timeout);
         }
         std::thread::sleep(POLL);
     };
@@ -306,26 +369,7 @@ pub fn run(
     let errors = stderr_reader
         .join()
         .unwrap_or_else(|_| Err(io::Error::other("error reader failed")));
-    let status = status?;
-    let (output, truncated) = match output {
-        Ok(output) => output,
-        Err(error) => {
-            return Err(Failure::Io(format!("cannot read standard output: {error}")));
-        }
-    };
-    if truncated {
-        return Err(Failure::Oversized(bound));
-    }
-    written.map_err(|error| Failure::Io(format!("cannot write standard input: {error}")))?;
-    let detail = match &errors {
-        Ok((bytes, _)) => crate::git::sanitize(bytes),
-        Err(error) => format!("error output could not be read: {error}"),
-    };
-    match status.code() {
-        Some(0) => Ok(output),
-        Some(code) => Err(Failure::Status(code, detail)),
-        None => Err(Failure::Abnormal(detail)),
-    }
+    classify(&ended, output, &errors, &written, bound)
 }
 
 fn describe_spawn(program: &str, error: &io::Error) -> String {
@@ -346,5 +390,72 @@ fn read_bounded(reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> 
         Ok((buffer, true))
     } else {
         Ok((buffer, false))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classification_distinguishes_every_reason() {
+        let ok = |bytes: &[u8]| -> Stream { Ok((bytes.to_vec(), false)) };
+        let exited = Ended::Exited(Some(0));
+        assert_eq!(
+            classify(&exited, ok(b"out"), &ok(b""), &Ok(()), 10).unwrap(),
+            b"out"
+        );
+        // Standard output failures win over everything, including success.
+        let failed_out: Stream = Err(io::Error::other("boom"));
+        assert!(matches!(
+            classify(&exited, failed_out, &ok(b""), &Ok(()), 10),
+            Err(Failure::Io(message)) if message == "cannot read standard output: boom"
+        ));
+        assert!(matches!(
+            classify(
+                &Ended::Stopped,
+                Ok((b"x".to_vec(), true)),
+                &ok(b""),
+                &Ok(()),
+                10
+            ),
+            Err(Failure::Oversized(10))
+        ));
+        // A stopped run whose standard error failed is reported as that,
+        // never as an overflow, and a clean exit does not hide it either.
+        let failed_err: Stream = Err(io::Error::other("pipe"));
+        assert!(matches!(
+            classify(&Ended::Stopped, ok(b"out"), &failed_err, &Ok(()), 10),
+            Err(Failure::Io(message)) if message == "cannot read standard error: pipe"
+        ));
+        assert!(matches!(
+            classify(&exited, ok(b"out"), &failed_err, &Ok(()), 10),
+            Err(Failure::Io(message)) if message == "cannot read standard error: pipe"
+        ));
+        // Then the input pipe, then how the run ended.
+        assert!(matches!(
+            classify(&exited, ok(b"out"), &ok(b""), &Err(io::Error::other("closed")), 10),
+            Err(Failure::Io(message)) if message == "cannot write standard input: closed"
+        ));
+        assert!(matches!(
+            classify(&Ended::Exited(Some(3)), ok(b""), &ok(b"fatal: no\nmore"), &Ok(()), 10),
+            Err(Failure::Status(3, detail)) if detail == "no"
+        ));
+        assert!(matches!(
+            classify(&Ended::Exited(None), ok(b""), &ok(b""), &Ok(()), 10),
+            Err(Failure::Abnormal(detail)) if detail == "no details"
+        ));
+        assert!(matches!(
+            classify(&Ended::TimedOut(Duration::from_secs(2)), ok(b""), &ok(b""), &Ok(()), 10),
+            Err(Failure::Timeout(limit)) if limit == Duration::from_secs(2)
+        ));
+        assert!(matches!(
+            classify(&Ended::WaitFailed("gone".to_owned()), ok(b""), &ok(b""), &Ok(()), 10),
+            Err(Failure::Io(message)) if message == "cannot wait for the program: gone"
+        ));
+        assert!(matches!(
+            classify(&Ended::Stopped, ok(b""), &ok(b""), &Ok(()), 10),
+            Err(Failure::Abnormal(_))
+        ));
     }
 }

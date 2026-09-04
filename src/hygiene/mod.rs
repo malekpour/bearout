@@ -69,14 +69,16 @@ impl Budget {
 }
 
 /// One selected file with its bytes, read exactly once.
+#[derive(Debug)]
 pub struct Loaded {
     pub selected: Selected,
     pub bytes: Vec<u8>,
 }
 
 /// Read every selected file within `limits.file_bytes` and the run's
-/// budget. A file that cannot be read or is too large is B024 and is not
-/// returned; an exhausted budget is fatal.
+/// budget, reading no more than the limit allows and charging the bytes
+/// actually returned. A file that cannot be read or is too large is B024
+/// and is not returned; an exhausted budget is fatal.
 pub fn load(
     tree: &dyn ReadTree,
     selected: Vec<Selected>,
@@ -87,33 +89,19 @@ pub fn load(
     let mut loaded = Vec::new();
     for entry in selected {
         let path = entry.path.as_str();
-        match tree.file_len(&entry.path) {
-            Ok(len) if len > limits.file_bytes => {
-                diagnostics.push(Diagnostic::new(
-                    Code::FileUnreadable,
-                    path,
-                    format!(
-                        "file is {len} bytes, above `limits.file_bytes` = {}",
-                        limits.file_bytes
-                    ),
-                ));
-                continue;
+        match tree.read_bounded(&entry.path, limits.file_bytes) {
+            Ok((_, true)) => diagnostics.push(Diagnostic::new(
+                Code::FileUnreadable,
+                path,
+                over_limit(tree, &entry.path, "file", limits.file_bytes),
+            )),
+            Ok((bytes, false)) => {
+                budget.charge(path, bytes.len() as u64)?;
+                loaded.push(Loaded {
+                    selected: entry,
+                    bytes,
+                });
             }
-            Ok(len) => budget.charge(path, len)?,
-            Err(error) => {
-                diagnostics.push(Diagnostic::new(
-                    Code::FileUnreadable,
-                    path,
-                    format!("cannot read file: {error}"),
-                ));
-                continue;
-            }
-        }
-        match tree.read(&entry.path) {
-            Ok(bytes) => loaded.push(Loaded {
-                selected: entry,
-                bytes,
-            }),
             Err(error) => diagnostics.push(Diagnostic::new(
                 Code::FileUnreadable,
                 path,
@@ -122,6 +110,22 @@ pub fn load(
         }
     }
     Ok(loaded)
+}
+
+/// The message for a file above `limits.file_bytes`, with its length when
+/// the tree can still report one.
+pub fn over_limit(
+    tree: &dyn ReadTree,
+    path: &crate::paths::ProjectPath,
+    what: &str,
+    limit: u64,
+) -> String {
+    match tree.file_len(path) {
+        Ok(len) if len > limit => {
+            format!("{what} is {len} bytes, above `limits.file_bytes` = {limit}")
+        }
+        _ => format!("{what} exceeds `limits.file_bytes` = {limit}"),
+    }
 }
 
 /// Verify every loaded file that has a formatter against that formatter's
@@ -228,4 +232,101 @@ pub fn check_text(
     diagnostics.extend(resolver.take_diagnostics());
     resolver.fatal()?;
     Ok(decodable)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::paths::ProjectPath;
+
+    /// A tree whose reported length disagrees with its content, standing in
+    /// for a live file that grows between a length check and a read.
+    struct Lying {
+        content: Vec<u8>,
+    }
+
+    impl ReadTree for Lying {
+        fn read(&self, _: &ProjectPath) -> io::Result<Vec<u8>> {
+            Ok(self.content.clone())
+        }
+        fn file_len(&self, _: &ProjectPath) -> io::Result<u64> {
+            Ok(5)
+        }
+        fn is_file(&self, _: &ProjectPath) -> bool {
+            true
+        }
+        fn is_dir(&self, path: &ProjectPath) -> bool {
+            path.as_str().is_empty()
+        }
+        fn exists(&self, _: &ProjectPath) -> bool {
+            true
+        }
+        fn symlink_component(&self, _: &ProjectPath) -> io::Result<Option<ProjectPath>> {
+            Ok(None)
+        }
+        fn walk(&self, _: &ProjectPath) -> io::Result<Vec<ProjectPath>> {
+            Ok(Vec::new())
+        }
+        fn subtree(&self, _: &ProjectPath) -> io::Result<Arc<dyn ReadTree>> {
+            Err(io::Error::other("no subtrees"))
+        }
+    }
+
+    fn selected(path: &str) -> Selected {
+        Selected {
+            path: ProjectPath::parse(path).unwrap(),
+            binary: None,
+            formatter: None,
+        }
+    }
+
+    #[test]
+    fn limits_apply_to_the_bytes_actually_read_not_the_reported_length() {
+        let tree = Lying {
+            content: vec![b'x'; 1000],
+        };
+        let limits = Limits {
+            file_bytes: 100,
+            ..Limits::default()
+        };
+        let budget = Budget::new(&limits);
+        let mut diagnostics = Vec::new();
+        let loaded = load(&tree, vec![selected("a.txt")], &budget, &mut diagnostics).unwrap();
+        assert!(
+            loaded.is_empty(),
+            "the file is over the limit despite claiming 5 bytes"
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, Code::FileUnreadable);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("exceeds `limits.file_bytes` = 100"),
+            "{}",
+            diagnostics[0].message
+        );
+
+        // Within the file limit, the budget is charged with the real size.
+        let limits = Limits {
+            file_bytes: 2_000,
+            hygiene_bytes: 1_500,
+            ..Limits::default()
+        };
+        let budget = Budget::new(&limits);
+        let mut diagnostics = Vec::new();
+        let error = load(
+            &tree,
+            vec![selected("a.txt"), selected("b.txt")],
+            &budget,
+            &mut diagnostics,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("`limits.hygiene_bytes` = 1500 while reading `b.txt`"),
+            "{error}"
+        );
+    }
 }

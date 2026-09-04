@@ -38,6 +38,22 @@ pub trait ReadTree: Send + Sync {
     /// The bytes of a regular file.
     fn read(&self, path: &ProjectPath) -> io::Result<Vec<u8>>;
 
+    /// At most `limit + 1` bytes of a regular file, with a flag that is
+    /// `true` when the file holds more than `limit` bytes. Callers that
+    /// enforce a size limit use this rather than a length check followed
+    /// by an unbounded read, so a file that grows between the two cannot
+    /// slip past the limit. The default reads the whole file and truncates,
+    /// which is exact for frozen trees; the live working directory reads
+    /// no more than the bound.
+    fn read_bounded(&self, path: &ProjectPath, limit: u64) -> io::Result<(Vec<u8>, bool)> {
+        let mut bytes = self.read(path)?;
+        let over = u64::try_from(bytes.len()).is_ok_and(|len| len > limit);
+        if over {
+            bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        Ok((bytes, over))
+    }
+
     /// The UTF-8 text of a regular file. Invalid UTF-8 is
     /// [`io::ErrorKind::InvalidData`].
     fn read_text(&self, path: &ProjectPath) -> io::Result<String> {

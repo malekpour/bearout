@@ -99,6 +99,18 @@ impl ReadTree for WorkingDir {
         self.dir.read(path.to_native())
     }
 
+    fn read_bounded(&self, path: &ProjectPath, limit: u64) -> io::Result<(Vec<u8>, bool)> {
+        use std::io::Read;
+        let file = self.dir.open(path.to_native())?;
+        let mut bytes = Vec::new();
+        file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+        let over = u64::try_from(bytes.len()).is_ok_and(|len| len > limit);
+        if over {
+            bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        Ok((bytes, over))
+    }
+
     fn file_len(&self, path: &ProjectPath) -> io::Result<u64> {
         Ok(self.dir.metadata(path.to_native())?.len())
     }
@@ -197,5 +209,34 @@ impl Writer<'_> {
         temp.as_file_mut().set_permissions(permissions)?;
         temp.as_file_mut().sync_data()?;
         temp.replace(path.file_name())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_reads_never_read_more_than_the_bound_plus_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("big.txt"), vec![b'x'; 10_000]).unwrap();
+        std::fs::write(dir.path().join("small.txt"), b"tiny").unwrap();
+        let working = WorkingDir::open(dir.path()).unwrap();
+        let big = ProjectPath::parse("big.txt").unwrap();
+        let (bytes, over) = working.read_bounded(&big, 100).unwrap();
+        assert!(over);
+        assert_eq!(bytes.len(), 100, "truncated to the bound");
+        let (bytes, over) = working.read_bounded(&big, 10_000).unwrap();
+        assert!(!over);
+        assert_eq!(bytes.len(), 10_000);
+        let small = ProjectPath::parse("small.txt").unwrap();
+        let (bytes, over) = working.read_bounded(&small, 100).unwrap();
+        assert!(!over);
+        assert_eq!(bytes, b"tiny");
+        assert!(
+            working
+                .read_bounded(&ProjectPath::parse("missing").unwrap(), 1)
+                .is_err()
+        );
     }
 }

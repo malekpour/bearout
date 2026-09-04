@@ -250,27 +250,23 @@ impl<'a> Resolver<'a> {
                 ));
             }
         }
-        let len = self
-            .tree
-            .file_len(file)
-            .map_err(|error| report(format!("cannot read `{FILE_NAME}`: {error}"), None))?;
-        if len > self.budget.limits().file_bytes {
-            return Err(report(
-                format!(
-                    "`{FILE_NAME}` is {len} bytes, above `limits.file_bytes` = {}",
-                    self.budget.limits().file_bytes
-                ),
-                None,
-            ));
-        }
-        if let Err(message) = self.budget.charge(file.as_str(), len) {
+        let limit = self.budget.limits().file_bytes;
+        let bytes = match self.tree.read_bounded(file, limit) {
+            Ok((_, true)) => {
+                return Err(report(
+                    super::over_limit(self.tree, file, &format!("`{FILE_NAME}`"), limit),
+                    None,
+                ));
+            }
+            Ok((bytes, false)) => bytes,
+            Err(error) => {
+                return Err(report(format!("cannot read `{FILE_NAME}`: {error}"), None));
+            }
+        };
+        if let Err(message) = self.budget.charge(file.as_str(), bytes.len() as u64) {
             self.fatal.borrow_mut().get_or_insert(message);
             return Err(report("hygiene input budget exhausted".to_owned(), None));
         }
-        let bytes = self
-            .tree
-            .read(file)
-            .map_err(|error| report(format!("cannot read `{FILE_NAME}`: {error}"), None))?;
         let mut parser = ConfigParser::new_buffered(Cursor::new(bytes))
             .map_err(|error| report(describe(&error), None))?;
         let is_root = parser.is_root;
