@@ -84,7 +84,7 @@ directory and for fatal outcomes.
 | B020 | error | A generated output is missing, stale, unowned, orphaned, or changed ownership, or the state manifest is out of date or invalid. |
 | B021 | error | Delivering a generated output failed (with restoration attempted and reported), or delivery was refused to protect a file Bearout does not own. |
 | B022 | error | A schema-less document selected by `[documents]` could not be read, is not valid UTF-8, or exceeds `limits.document_bytes`. |
-| B023 | error | Hygiene configuration: an `.editorconfig` of the selected tree cannot be read or parsed (reported once, on that file), or a property it sets for a selected file has a value Bearout cannot enforce (reported on the selected file). Files governed by an unusable `.editorconfig` are not checked. |
+| B023 | error | Hygiene configuration: an `.editorconfig` of the selected tree cannot be read or parsed, is reached through a symbolic link, or exceeds `limits.file_bytes` (reported once, on that file), or a property it sets for a selected file has a value Bearout cannot enforce (reported on the selected file). Files governed by an unusable `.editorconfig` are neither checked nor formatted. |
 | B024 | error | A file selected by `[hygiene]` could not be read or exceeds `limits.file_bytes`. |
 | B025 | error | A selected text file is not valid UTF-8, begins with a byte-order mark that `charset = utf-8` forbids, or lacks the mark that `charset = utf-8-bom` requires. Nothing else is checked in that file. |
 | B026 | error | A line terminator contradicts `end_of_line`. One per file, naming the first line. |
@@ -92,7 +92,7 @@ directory and for fatal outcomes.
 | B028 | error | A line ends with spaces or tabs under `trim_trailing_whitespace = true`. One per file, naming the first line. |
 | B029 | error | A selected file differs from the output of the formatter assigned to it; `bearout format` rewrites it. |
 | B030 | error | The formatter assigned to a selected file exited with a non-zero status, timed out, produced more output than the bound allows, or ended abnormally. A formatter that cannot start at all is fatal. |
-| B031 | error | A formatting write was refused (the file is reached through a symbolic link, or changed after it was read) or failed, with restoration attempted and reported. |
+| B031 | error | A formatting write was refused (the file is reached through a symbolic link, or changed after it was read, checked again immediately before replacement) or failed; completed replacements are restored only while they still hold the bytes Bearout wrote, and every refusal and restoration failure is reported. Best-effort conflict detection, not an atomic compare-and-swap. |
 
 ## Repository rule identifiers
 

@@ -21,11 +21,52 @@ pub mod selection;
 pub mod text;
 pub mod write;
 
+use std::cell::Cell;
+
 use crate::bootstrap::{Bootstrap, Limits};
 use crate::report::{Code, Diagnostic};
 use crate::tree::ReadTree;
 
 pub use selection::{Selected, Universe, select};
+
+/// The bounds every hygiene read observes: `limits.file_bytes` per file
+/// and `limits.hygiene_bytes` in total across selected files,
+/// `.editorconfig` files, and formatter support files, so that
+/// repository-wide selection cannot grow memory without bound.
+pub struct Budget {
+    limits: Limits,
+    remaining: Cell<u64>,
+}
+
+impl Budget {
+    #[must_use]
+    pub fn new(limits: &Limits) -> Self {
+        Self {
+            limits: *limits,
+            remaining: Cell::new(limits.hygiene_bytes),
+        }
+    }
+
+    /// The per-file and other limits of the candidate.
+    #[must_use]
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// Charge `bytes` for reading `what`; exhaustion is fatal.
+    pub fn charge(&self, what: &str, bytes: u64) -> Result<(), String> {
+        match self.remaining.get().checked_sub(bytes) {
+            Some(left) => {
+                self.remaining.set(left);
+                Ok(())
+            }
+            None => Err(format!(
+                "hygiene inputs exceed `limits.hygiene_bytes` = {} while reading `{what}`",
+                self.limits.hygiene_bytes
+            )),
+        }
+    }
+}
 
 /// One selected file with its bytes, read exactly once.
 pub struct Loaded {
@@ -33,14 +74,16 @@ pub struct Loaded {
     pub bytes: Vec<u8>,
 }
 
-/// Read every selected file within `limits.file_bytes`. A file that cannot
-/// be read or is too large is B024 and is not returned.
+/// Read every selected file within `limits.file_bytes` and the run's
+/// budget. A file that cannot be read or is too large is B024 and is not
+/// returned; an exhausted budget is fatal.
 pub fn load(
     tree: &dyn ReadTree,
     selected: Vec<Selected>,
-    limits: &Limits,
+    budget: &Budget,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<Loaded> {
+) -> Result<Vec<Loaded>, String> {
+    let limits = budget.limits();
     let mut loaded = Vec::new();
     for entry in selected {
         let path = entry.path.as_str();
@@ -56,7 +99,7 @@ pub fn load(
                 ));
                 continue;
             }
-            Ok(_) => {}
+            Ok(len) => budget.charge(path, len)?,
             Err(error) => {
                 diagnostics.push(Diagnostic::new(
                     Code::FileUnreadable,
@@ -78,24 +121,30 @@ pub fn load(
             )),
         }
     }
-    loaded
+    Ok(loaded)
 }
 
 /// Verify every loaded file that has a formatter against that formatter's
-/// output. Formatters run only when the host authorized them; declaring
-/// formatters without authorization is fatal, as is a formatter that cannot
-/// start or a support file the selected tree lacks. Each difference is
-/// B029 and each failed run is B030, in path order.
+/// output, skipping files the text phase could not decode or configure so
+/// that nothing cascades from B023 or B025. Formatters run only when the
+/// host authorized them; declaring formatters without authorization is
+/// fatal, as is a formatter that cannot start or a support file the
+/// selected tree lacks. Each difference is B029 and each failed run is
+/// B030, in path order.
 pub fn check_formatters(
     tree: &dyn ReadTree,
     loaded: &[Loaded],
+    decodable: &[bool],
     bootstrap: &Bootstrap,
+    budget: &Budget,
     authorized: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(), String> {
     let assigned: Vec<&Loaded> = loaded
         .iter()
-        .filter(|file| file.selected.formatter.is_some())
+        .zip(decodable)
+        .filter(|(file, decodable)| file.selected.formatter.is_some() && **decodable)
+        .map(|(file, _)| file)
         .collect();
     if assigned.is_empty() {
         return Ok(());
@@ -117,7 +166,7 @@ pub fn check_formatters(
         let index = file.selected.formatter.expect("assigned");
         let formatter = &bootstrap.formatters[index];
         if workdirs[index].is_none() {
-            workdirs[index] = Some(external::Workdir::prepare(tree, formatter)?);
+            workdirs[index] = Some(external::Workdir::prepare(tree, formatter, budget)?);
         }
         let workdir = workdirs[index].as_ref().expect("prepared");
         match external::run(formatter, workdir, &file.selected.path, &file.bytes) {
@@ -147,19 +196,36 @@ pub fn check_formatters(
 }
 
 /// Native text hygiene over every loaded file, with properties resolved
-/// from the same tree.
-pub fn check_text(tree: &dyn ReadTree, loaded: &[Loaded], diagnostics: &mut Vec<Diagnostic>) {
-    let resolver = editorconfig::Resolver::new(tree);
+/// from the same tree. Returns, per loaded file, whether its configuration
+/// was usable and its bytes decodable, so later phases can leave the
+/// others alone. An exhausted budget is fatal.
+pub fn check_text(
+    tree: &dyn ReadTree,
+    loaded: &[Loaded],
+    budget: &Budget,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<bool>, String> {
+    let resolver = editorconfig::Resolver::new(tree, budget);
+    let mut decodable = Vec::with_capacity(loaded.len());
     for file in loaded {
         match resolver.properties(&file.selected.path) {
-            Ok(effective) => diagnostics.extend(text::check(
-                file.selected.path.as_str(),
-                &file.bytes,
-                file.selected.binary,
-                effective,
-            )),
-            Err(problems) => diagnostics.extend(problems),
+            Ok(effective) => {
+                let found = text::check(
+                    file.selected.path.as_str(),
+                    &file.bytes,
+                    file.selected.binary,
+                    effective,
+                );
+                decodable.push(!found.iter().any(|d| d.code == Code::Encoding));
+                diagnostics.extend(found);
+            }
+            Err(problems) => {
+                decodable.push(false);
+                diagnostics.extend(problems);
+            }
         }
     }
     diagnostics.extend(resolver.take_diagnostics());
+    resolver.fatal()?;
+    Ok(decodable)
 }

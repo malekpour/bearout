@@ -119,9 +119,13 @@ pub fn check(
     let has_bom = bytes.starts_with(BOM);
     let text = if has_bom { &bytes[BOM.len()..] } else { bytes };
     if let Err(error) = std::str::from_utf8(text) {
-        let line = text[..error.valid_up_to()]
-            .split(|byte| *byte == b'\n')
-            .count();
+        // The line of the first invalid byte, counting CRLF, LF, and CR
+        // terminators alike.
+        let line = lines(&text[..error.valid_up_to()])
+            .iter()
+            .filter(|line| line.terminator.is_some())
+            .count()
+            + 1;
         diagnostics.push(
             Diagnostic::new(
                 Code::Encoding,
@@ -520,6 +524,9 @@ mod tests {
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0].code, Code::Encoding);
         assert_eq!(invalid[0].line, Some(2));
+        let after_cr = check("f", b"one\rtwo\r\nthree\xff", None, all());
+        assert_eq!(after_cr[0].line, Some(3), "CR and CRLF count as lines");
+        assert_eq!(check("f", b"\xff", None, all())[0].line, Some(1));
         assert_eq!(codes(b"\xEF\xBB\xBFa\n", all()), [Code::Encoding]);
         let bom = Effective {
             charset: Some(Charset::Utf8Bom),

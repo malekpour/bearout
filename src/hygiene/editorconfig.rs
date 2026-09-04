@@ -20,6 +20,7 @@ use ec4rs::property::{Charset as EcCharset, EndOfLine, FinalNewline, TrimTrailin
 use ec4rs::rawvalue::RawValue;
 use ec4rs::{ConfigParser, ParseError, Properties, PropertyKey, PropertyValue, Section};
 
+use super::Budget;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
 use crate::tree::ReadTree;
@@ -74,27 +75,43 @@ struct Parsed {
 /// `Some(Err)` when it has an unusable one.
 type Cached = Option<Result<std::rc::Rc<Parsed>, ()>>;
 
-/// Resolves effective properties, parsing each `.editorconfig` once.
+/// Resolves effective properties, parsing each `.editorconfig` once. A
+/// configuration file is read like any other hygiene input: never through
+/// a symbolic link, within `limits.file_bytes`, and charged to the run's
+/// budget.
 pub struct Resolver<'a> {
     tree: &'a dyn ReadTree,
+    budget: &'a Budget,
     cache: RefCell<BTreeMap<ProjectPath, Cached>>,
     /// Configuration files already reported as unusable.
     reported: RefCell<Vec<Diagnostic>>,
+    /// An exhausted budget, which ends the run.
+    fatal: RefCell<Option<String>>,
 }
 
 impl<'a> Resolver<'a> {
     #[must_use]
-    pub fn new(tree: &'a dyn ReadTree) -> Self {
+    pub fn new(tree: &'a dyn ReadTree, budget: &'a Budget) -> Self {
         Self {
             tree,
+            budget,
             cache: RefCell::new(BTreeMap::new()),
             reported: RefCell::new(Vec::new()),
+            fatal: RefCell::new(None),
         }
     }
 
     /// The diagnostics for unusable configuration files, each once.
     pub fn take_diagnostics(&self) -> Vec<Diagnostic> {
         std::mem::take(&mut *self.reported.borrow_mut())
+    }
+
+    /// `Err` when reading configuration exhausted the budget.
+    pub fn fatal(&self) -> Result<(), String> {
+        match self.fatal.borrow().as_ref() {
+            Some(message) => Err(message.clone()),
+            None => Ok(()),
+        }
     }
 
     /// The effective properties for `path`, or `Err` with the diagnostics
@@ -216,6 +233,40 @@ impl<'a> Resolver<'a> {
         let report = |message: String, line: Option<u32>| {
             Diagnostic::new(Code::HygieneConfig, file.as_str(), message).at_line(line)
         };
+        match self.tree.symlink_component(file) {
+            Ok(None) => {}
+            Ok(Some(link)) => {
+                return Err(report(
+                    format!(
+                        "`{FILE_NAME}` is reached through the symbolic link `{link}`; configuration is never read through links"
+                    ),
+                    None,
+                ));
+            }
+            Err(error) => {
+                return Err(report(
+                    format!("cannot inspect `{FILE_NAME}`: {error}"),
+                    None,
+                ));
+            }
+        }
+        let len = self
+            .tree
+            .file_len(file)
+            .map_err(|error| report(format!("cannot read `{FILE_NAME}`: {error}"), None))?;
+        if len > self.budget.limits().file_bytes {
+            return Err(report(
+                format!(
+                    "`{FILE_NAME}` is {len} bytes, above `limits.file_bytes` = {}",
+                    self.budget.limits().file_bytes
+                ),
+                None,
+            ));
+        }
+        if let Err(message) = self.budget.charge(file.as_str(), len) {
+            self.fatal.borrow_mut().get_or_insert(message);
+            return Err(report("hygiene input budget exhausted".to_owned(), None));
+        }
         let bytes = self
             .tree
             .read(file)

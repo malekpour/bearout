@@ -58,8 +58,12 @@ pub fn select(
                 for path in listed {
                     // Listed but deleted, replaced by a directory, or a link:
                     // not a regular file of this working directory.
-                    if tree.symlink_component(&path).ok().flatten().is_some() {
-                        continue;
+                    match tree.symlink_component(&path) {
+                        Ok(Some(_)) => continue,
+                        Ok(None) => {}
+                        Err(error) => {
+                            return Err(format!("cannot inspect `{path}`: {error}"));
+                        }
                     }
                     if tree.is_file(&path) {
                         candidates.insert(path);

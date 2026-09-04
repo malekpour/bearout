@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use super::Budget;
 use crate::bootstrap::{Formatter, PATH_PLACEHOLDER};
 use crate::paths::ProjectPath;
 use crate::tree::ReadTree;
@@ -91,9 +92,15 @@ pub struct Workdir {
 
 impl Workdir {
     /// Create the directory and copy every support file into it at its
-    /// project-relative path. A support file that is missing, linked, or
-    /// unreadable in the selected tree is an error naming it.
-    pub fn prepare(tree: &dyn ReadTree, formatter: &Formatter) -> Result<Self, String> {
+    /// project-relative path. A support file that is missing, linked,
+    /// unreadable, or above `limits.file_bytes` in the selected tree is an
+    /// error naming it, and every support file is charged to the budget.
+    pub fn prepare(
+        tree: &dyn ReadTree,
+        formatter: &Formatter,
+        budget: &Budget,
+    ) -> Result<Self, String> {
+        let limits = budget.limits();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos());
@@ -149,6 +156,19 @@ impl Workdir {
                     ));
                 }
             }
+            let len = tree.file_len(support).map_err(|error| {
+                format!(
+                    "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
+                    formatter.name
+                )
+            })?;
+            if len > limits.file_bytes {
+                return Err(format!(
+                    "support file `{support}` of formatter `{}` is {len} bytes, above `limits.file_bytes` = {}",
+                    formatter.name, limits.file_bytes
+                ));
+            }
+            budget.charge(support.as_str(), len)?;
             let bytes = tree.read(support).map_err(|error| {
                 format!(
                     "cannot read support file `{support}` of formatter `{}` from the selected tree: {error}",
@@ -231,27 +251,43 @@ pub fn run(
         .len()
         .saturating_mul(4)
         .saturating_add(OUTPUT_HEADROOM);
-    let overflow = Arc::new(AtomicBool::new(false));
+    // Readers raise `stop` when the output overflows or a pipe fails, so
+    // the wait loop kills the program promptly instead of waiting for the
+    // timeout while it blocks on a pipe nobody drains.
+    let stop = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().expect("stdout is piped");
-    let stdout_overflow = Arc::clone(&overflow);
+    let stdout_stop = Arc::clone(&stop);
     let stdout_reader = std::thread::spawn(move || {
         let result = read_bounded(stdout, bound);
-        if matches!(result, Ok((_, true))) {
-            stdout_overflow.store(true, Ordering::Relaxed);
+        if !matches!(result, Ok((_, false))) {
+            stdout_stop.store(true, Ordering::Relaxed);
         }
         result
     });
     let stderr = child.stderr.take().expect("stderr is piped");
-    let stderr_reader = std::thread::spawn(move || read_bounded(stderr, MAX_STDERR_BYTES));
+    let stderr_stop = Arc::clone(&stop);
+    let stderr_reader = std::thread::spawn(move || {
+        let result = read_bounded(stderr, MAX_STDERR_BYTES);
+        if result.is_err() {
+            stderr_stop.store(true, Ordering::Relaxed);
+        }
+        result
+    });
 
+    // Every path out of this loop leaves the program dead and reaped, so
+    // the pipe threads always reach end of stream before they are joined.
     let deadline = Instant::now() + formatter.timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {}
-            Err(error) => break Err(Failure::Io(error.to_string())),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(Failure::Io(format!("cannot wait for the program: {error}")));
+            }
         }
-        if overflow.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
             break Err(Failure::Oversized(bound));
@@ -269,18 +305,26 @@ pub fn run(
         .unwrap_or_else(|_| Err(io::Error::other("output reader failed")));
     let errors = stderr_reader
         .join()
-        .unwrap_or_else(|_| Err(io::Error::other("error reader failed")))
-        .map_or_else(|_| Vec::new(), |(bytes, _)| bytes);
+        .unwrap_or_else(|_| Err(io::Error::other("error reader failed")));
     let status = status?;
-    let (output, truncated) = output.map_err(|error| Failure::Io(error.to_string()))?;
+    let (output, truncated) = match output {
+        Ok(output) => output,
+        Err(error) => {
+            return Err(Failure::Io(format!("cannot read standard output: {error}")));
+        }
+    };
     if truncated {
         return Err(Failure::Oversized(bound));
     }
-    written.map_err(|error| Failure::Io(error.to_string()))?;
+    written.map_err(|error| Failure::Io(format!("cannot write standard input: {error}")))?;
+    let detail = match &errors {
+        Ok((bytes, _)) => crate::git::sanitize(bytes),
+        Err(error) => format!("error output could not be read: {error}"),
+    };
     match status.code() {
         Some(0) => Ok(output),
-        Some(code) => Err(Failure::Status(code, crate::git::sanitize(&errors))),
-        None => Err(Failure::Abnormal(crate::git::sanitize(&errors))),
+        Some(code) => Err(Failure::Status(code, detail)),
+        None => Err(Failure::Abnormal(detail)),
     }
 }
 

@@ -305,12 +305,14 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         };
         let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
         report.files = selected.len();
+        let budget = hygiene::Budget::new(&bootstrap.limits);
         let mut diagnostics = Vec::new();
-        let loaded = hygiene::load(tree, selected, &bootstrap.limits, &mut diagnostics);
+        let loaded = hygiene::load(tree, selected, &budget, &mut diagnostics)?;
         report.formatted = hygiene::write::format(
             working,
             &loaded,
             &bootstrap,
+            &budget,
             options.allow_formatters,
             &mut diagnostics,
         )?;
@@ -333,17 +335,21 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     report.resources = gathered.files.len();
     report.documents = gathered.document_paths.len();
 
-    // Phase: hygiene, for the candidate only: select, read once, check the
-    // bytes against the tree's own `.editorconfig` files.
+    // Phase: hygiene, for the candidate only: select, read once within one
+    // budget, check the bytes against the tree's own `.editorconfig`
+    // files, then hand only decodable, configured files to formatters.
     let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
     report.files = selected.len();
+    let budget = hygiene::Budget::new(&bootstrap.limits);
     let mut hygiene_diagnostics = Vec::new();
-    let loaded = hygiene::load(tree, selected, &bootstrap.limits, &mut hygiene_diagnostics);
-    hygiene::check_text(tree, &loaded, &mut hygiene_diagnostics);
+    let loaded = hygiene::load(tree, selected, &budget, &mut hygiene_diagnostics)?;
+    let decodable = hygiene::check_text(tree, &loaded, &budget, &mut hygiene_diagnostics)?;
     hygiene::check_formatters(
         tree,
         &loaded,
+        &decodable,
         &bootstrap,
+        &budget,
         options.allow_formatters,
         &mut hygiene_diagnostics,
     )?;

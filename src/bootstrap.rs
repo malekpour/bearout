@@ -44,6 +44,9 @@ pub struct Limits {
     pub files: usize,
     /// Maximum size of one selected file in bytes.
     pub file_bytes: u64,
+    /// Maximum total bytes read for hygiene in one run: selected files,
+    /// `.editorconfig` files, and formatter support files together.
+    pub hygiene_bytes: u64,
 }
 
 impl Default for Limits {
@@ -70,6 +73,7 @@ impl Default for Limits {
             document_bytes: 4 * 1024 * 1024,
             files: 20_000,
             file_bytes: 8 * 1024 * 1024,
+            hygiene_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -542,7 +546,7 @@ fn parse_formatter(table: &Table, index: usize) -> Result<Formatter, String> {
 }
 
 fn parse_limits(limits: &Table) -> Result<Limits, String> {
-    const KEYS: [&str; 11] = [
+    const KEYS: [&str; 12] = [
         "ticks",
         "heap_bytes",
         "call_stack",
@@ -554,6 +558,7 @@ fn parse_limits(limits: &Table) -> Result<Limits, String> {
         "document_bytes",
         "files",
         "file_bytes",
+        "hygiene_bytes",
     ];
     reject_unknown(limits, "limits", &KEYS)?;
     let mut result = Limits::default();
@@ -604,6 +609,9 @@ fn parse_limits(limits: &Table) -> Result<Limits, String> {
     }
     if let Some(value) = positive("file_bytes")? {
         result.file_bytes = value;
+    }
+    if let Some(value) = positive("hygiene_bytes")? {
+        result.hygiene_bytes = value;
     }
     Ok(result)
 }
@@ -936,6 +944,7 @@ mod tests {
             ),
             ("[limits]\nfiles = 0\n", "limits.files"),
             ("[limits]\nfile_bytes = -5\n", "limits.file_bytes"),
+            ("[limits]\nhygiene_bytes = 0\n", "limits.hygiene_bytes"),
         ];
         for (body, expected) in cases {
             let error = parse(&format!("{MINIMAL}{body}")).unwrap_err();

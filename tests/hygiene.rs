@@ -420,15 +420,15 @@ fn size_limits_stop_a_file_without_cascading() {
     project.file(
         "bearout.toml",
         &format!(
-            "{}\n[limits]\nfile_bytes = 10\n",
+            "{}\n[limits]\nfile_bytes = 160\n",
             hygiene_bootstrap("scope = \"declared\"\nroots = [\"text\"]")
         ),
     );
-    project.file("text/big.txt", "much too long  \r\n");
+    project.file("text/big.txt", &format!("{}  \r\n", "x".repeat(200)));
     let report = project.check();
     assert_eq!(
         lines(&report),
-        ["text/big.txt:B024: file is 17 bytes, above `limits.file_bytes` = 10"]
+        ["text/big.txt:B024: file is 204 bytes, above `limits.file_bytes` = 160"]
     );
     assert!(
         codes(&report)
@@ -1023,7 +1023,7 @@ fn a_partial_failure_restores_prior_content() {
     );
     assert_line(
         &report,
-        "bearout.toml:B031: formatting failed after 2 change(s); prior content was restored where possible",
+        "bearout.toml:B031: formatting failed after 2 change(s); 2 restored to prior content",
     );
     assert!(report.formatted.is_empty());
     assert_eq!(
@@ -1033,4 +1033,170 @@ fn a_partial_failure_restores_prior_content() {
     );
     assert!(leftovers(&project, "text").is_empty());
     assert!(leftovers(&project, "src").is_empty());
+}
+
+// ---- bounded inputs and phase gating --------------------------------------
+
+#[test]
+fn configuration_and_support_files_are_bounded_and_never_linked() {
+    // An oversized `.editorconfig` is reported once and suspends checks
+    // beneath it, from every source.
+    let project = text_project();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nfile_bytes = 160\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"text\"]")
+        ),
+    );
+    project.file(
+        "text/big/.editorconfig",
+        &format!("[*]\n# {}\ninsert_final_newline = true\n", "x".repeat(280)),
+    );
+    project.file("text/big/a.txt", "no newline");
+    project.git_init();
+    project.commit_all("base");
+    for source in [
+        Source::WorkingDirectory,
+        Source::Index,
+        Source::Revision("HEAD".to_owned()),
+    ] {
+        let report = project.check_from(source);
+        // The oversized configuration is reported as configuration (B023)
+        // and, being a selected file itself, as an oversized file (B024);
+        // nothing beneath it is checked.
+        assert_eq!(
+            lines(&report),
+            [
+                "text/big/.editorconfig:B023: `.editorconfig` is 315 bytes, above `limits.file_bytes` = 160",
+                "text/big/.editorconfig:B024: file is 315 bytes, above `limits.file_bytes` = 160",
+            ]
+        );
+    }
+
+    // A linked `.editorconfig` is refused, in Git trees and on disk.
+    let project = text_project();
+    project.file("text/linked/real.ini", "[*]\ninsert_final_newline = true\n");
+    project.file("text/linked/a.txt", "no newline");
+    project.git_init();
+    project.commit_all("base");
+    project.stage_entry("120000", b"real.ini", "text/linked/.editorconfig");
+    let report = project.check_from(Source::Index);
+    assert_eq!(
+        lines(&report),
+        [
+            "text/linked/.editorconfig:B023: `.editorconfig` is reached through the symbolic link `text/linked/.editorconfig`; configuration is never read through links"
+        ]
+    );
+    project.git(&["commit", "-q", "-m", "linked config"]);
+    assert_line(
+        &project.check_from(Source::Revision("HEAD".to_owned())),
+        "text/linked/.editorconfig:B023: `.editorconfig` is reached through the symbolic link",
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("real.ini", project.path().join("text/linked/.editorconfig"))
+            .expect("symlink");
+        assert_line(
+            &project.check(),
+            "text/linked/.editorconfig:B023: `.editorconfig` is reached through the symbolic link",
+        );
+    }
+
+    // Oversized and linked support files are fatal and name the file.
+    let project = formatter_project(", \"config\", \"tool.cfg\"", "support = [\"tool.cfg\"]");
+    project.file("tool.cfg", &"c".repeat(100));
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nfile_bytes = 50\n",
+            formatter_bootstrap(", \"config\", \"tool.cfg\"", "support = [\"tool.cfg\"]")
+        ),
+    );
+    project.file("src/a.txt", "small\n");
+    project.remove("src/b.txt");
+    assert_fatal(
+        &project.run(Command::Check, &allowed(Source::WorkingDirectory)),
+        "support file `tool.cfg` of formatter `fixture` is 100 bytes, above `limits.file_bytes` = 50",
+    );
+    project.file(
+        "bearout.toml",
+        &formatter_bootstrap(", \"config\", \"tool.cfg\"", "support = [\"tool.cfg\"]"),
+    );
+    project.git_init();
+    project.commit_all("base");
+    project.stage_entry("120000", b"src/a.txt", "tool.cfg");
+    assert_fatal(
+        &project.run(Command::Check, &allowed(Source::Index)),
+        "support file `tool.cfg` of formatter `fixture` is reached through the symbolic link `tool.cfg`",
+    );
+}
+
+#[test]
+fn the_total_hygiene_budget_is_fatal_when_exhausted() {
+    let project = text_project();
+    project.file("text/one.txt", "1234567890\n");
+    project.file("text/two.txt", "1234567890\n");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nhygiene_bytes = 100\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"text\"]")
+        ),
+    );
+    assert_fatal(
+        &project.check(),
+        "hygiene inputs exceed `limits.hygiene_bytes` = 100 while reading `",
+    );
+    // Configuration files count too.
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nhygiene_bytes = 30\n",
+            hygiene_bootstrap("scope = \"declared\"\nfiles = [\"text/one.txt\"]")
+        ),
+    );
+    assert_fatal(&project.check(), "while reading `.editorconfig`");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nhygiene_bytes = 100000\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"text\"]")
+        ),
+    );
+    assert_clean(&project.check());
+}
+
+#[test]
+fn formatters_never_see_undecodable_or_unconfigured_files() {
+    let project = formatter_project(", \"upper\"", "");
+    project.file(
+        ".editorconfig",
+        "root = true\n\n[*]\ncharset = utf-8\n\n[weird.txt]\ncharset = latin1\n",
+    );
+    project.bytes("src/a.txt", b"caf\xe9\n");
+    project.file("src/weird.txt", "x\n");
+    project.file("src/b.txt", "lower\n");
+    project.file("src/broken/.editorconfig", "[*\nnot a property\n");
+    project.file("src/broken/c.txt", "lower\n");
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(
+        lines(&report),
+        [
+            "src/a.txt:1:B025: file is not valid UTF-8: invalid utf-8 sequence of 1 bytes from index 3",
+            "src/b.txt:B029: file differs from the output of formatter `fixture`; run `bearout format`",
+            "src/broken/.editorconfig:B023: `.editorconfig` has a line that is neither a section header, a property, nor a comment",
+            "src/weird.txt:B023: `charset = latin1` is not a value Bearout can enforce; remove the property, set it to `unset`, or exclude the file from the selection",
+        ]
+    );
+    // The same gating governs the write: nothing undecodable or unconfigured
+    // reaches the formatter or the tree.
+    let report = project.run(Command::Format, &format_options());
+    assert_eq!(report.formatted, ["src/b.txt"]);
+    assert_eq!(
+        std::fs::read(project.path().join("src/a.txt")).unwrap(),
+        b"caf\xe9\n"
+    );
+    assert_eq!(project.read("src/weird.txt"), "x\n");
+    assert_eq!(project.read("src/broken/c.txt"), "lower\n");
 }
