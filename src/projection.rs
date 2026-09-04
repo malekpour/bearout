@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::bootstrap::{Bootstrap, Limits, MANIFEST_NAME};
+use crate::changes::{Classification, Surface, SurfaceEntry};
 use crate::document::{self, Document};
 use crate::envelope::{self, Resource};
 use crate::graph::{self, Graph};
@@ -32,6 +33,8 @@ pub struct Gathered {
     pub parsed: Vec<Parsed>,
     pub documents: Vec<Document>,
     pub document_paths: Vec<ProjectPath>,
+    /// Every file whose bytes were read, with the digest of those bytes.
+    pub surface: Surface,
 }
 
 /// One side after structural validation and graph construction.
@@ -43,6 +46,8 @@ pub struct Projection {
     /// Every document that was read, in path order.
     pub documents: Vec<Document>,
     pub graph: Graph,
+    /// Every file whose bytes were read, with the digest of those bytes.
+    pub surface: Surface,
 }
 
 impl Projection {
@@ -80,13 +85,25 @@ pub fn gather(
 ) -> Result<Gathered, String> {
     let files = discover(tree, bootstrap, limits)?;
     let document_paths = document::discover(tree, bootstrap, limits, &files)?;
-    let parsed = parse_all(tree, limits, &files, diagnostics);
+    let mut surface = Surface::new();
+    let parsed = parse_all(tree, limits, &files, &mut surface, diagnostics);
     let documents = read_documents(tree, limits, &document_paths, diagnostics);
+    for document in &documents {
+        surface.insert(
+            document.path.clone(),
+            SurfaceEntry {
+                classification: Classification::Document,
+                digest: document.digest.clone(),
+                bytes: document.bytes,
+            },
+        );
+    }
     Ok(Gathered {
         files,
         parsed,
         documents,
         document_paths,
+        surface,
     })
 }
 
@@ -106,6 +123,7 @@ pub fn settle(
         mut parsed,
         documents,
         document_paths,
+        surface,
     } = gathered;
     validate_structure(&mut parsed, policy, shapes, side, diagnostics);
     let resources: Vec<Resource> = parsed
@@ -130,6 +148,7 @@ pub fn settle(
         validity,
         documents,
         graph,
+        surface,
     }
 }
 
@@ -156,13 +175,19 @@ pub fn baseline(
         let bootstrap = crate::bootstrap::parse(&text)
             .map_err(|error| fatal(format!("{MANIFEST_NAME} is not usable: {error}")))?;
         check_resource_roots(tree, &bootstrap).map_err(fatal)?;
-        gather(tree, &bootstrap, limits, &mut own).map_err(fatal)?
+        let mut gathered = gather(tree, &bootstrap, limits, &mut own).map_err(fatal)?;
+        gathered.surface.insert(
+            manifest_path,
+            SurfaceEntry::new(Classification::Manifest, text.as_bytes()),
+        );
+        gathered
     } else {
         Gathered {
             files: Vec::new(),
             parsed: Vec::new(),
             documents: Vec::new(),
             document_paths: Vec::new(),
+            surface: Surface::new(),
         }
     };
     let projection = settle(tree, gathered, policy, shapes, Side::Baseline, &mut own);
@@ -226,6 +251,7 @@ fn parse_all(
     tree: &dyn ReadTree,
     limits: &Limits,
     files: &[ProjectPath],
+    surface: &mut Surface,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Parsed> {
     let mut parsed = Vec::new();
@@ -263,6 +289,10 @@ fn parse_all(
                 continue;
             }
         };
+        surface.insert(
+            path.clone(),
+            SurfaceEntry::new(Classification::Resource, &bytes),
+        );
         let mut envelope_diagnostics = Vec::new();
         match envelope::parse(path, &bytes, &mut envelope_diagnostics) {
             Ok(resource) => {

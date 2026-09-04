@@ -10,6 +10,7 @@ use starlark::values::dict::AllocDict;
 use starlark::values::list::AllocList;
 use starlark::values::{Heap, OwnedFrozenValue, Value as StarlarkValue};
 
+use crate::changes::Change;
 use crate::document::Document;
 use crate::envelope::Resource;
 use crate::graph::Graph;
@@ -54,14 +55,14 @@ impl Views {
     /// `project["comparison"]`, with the same value shapes.
     pub fn build(
         candidate: SideView<'_>,
-        comparison: Option<SideView<'_>>,
+        comparison: Option<(SideView<'_>, Vec<Change>)>,
     ) -> Result<Self, String> {
         let resource_json = candidate.resource_json();
         let mut candidate_json =
             project_json(&resource_json, &candidate.document_json(), candidate.graph);
         candidate_json["comparison"] = match comparison {
             None => Value::Null,
-            Some(baseline) => {
+            Some((baseline, changes)) => {
                 let info = baseline.info.expect("a baseline carries its identity");
                 let mut view = project_json(
                     &baseline.resource_json(),
@@ -71,7 +72,8 @@ impl Views {
                 view["revision"] = json!(info.revision);
                 view["tree"] = json!(info.tree);
                 view["digest"] = json!(info.digest);
-                json!({ "baseline": view })
+                let changes: Vec<Value> = changes.iter().map(Change::view).collect();
+                json!({ "baseline": view, "changes": changes })
             }
         };
         let indexes = candidate.indexes;

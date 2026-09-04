@@ -7,6 +7,7 @@
 //! both is processed once, as a resource.
 
 use crate::bootstrap::{Bootstrap, Limits, MARKDOWN_EXTENSION};
+use crate::changes;
 use crate::markdown;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
@@ -24,6 +25,11 @@ pub struct Document {
     /// Markdown structure: sections, explicit anchors, blocks, links, and
     /// images, from the same parser resources use.
     pub doc: markdown::Document,
+    /// Digest of the exact bytes read, before the byte-order mark was
+    /// removed; for change facts.
+    pub digest: String,
+    /// Length of those bytes.
+    pub bytes: u64,
 }
 
 impl Document {
@@ -120,6 +126,7 @@ pub fn read(
     let bytes = tree
         .read(path)
         .map_err(|error| report(format!("cannot read document: {error}")))?;
+    let digest = changes::digest(&bytes);
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| report(format!("document is not valid UTF-8: {error}")))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -129,5 +136,7 @@ pub fn read(
         text: text.to_owned(),
         line_count,
         doc: markdown::parse(text, 1),
+        digest,
+        bytes: bytes.len() as u64,
     })
 }

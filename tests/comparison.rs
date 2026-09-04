@@ -564,3 +564,129 @@ fn baselines_work_below_the_repository_root_and_in_linked_worktrees() {
     assert_eq!(report.resources, 3);
     assert_line(&report, "baseline main ids note-a,note-b docs ");
 }
+
+// ---- change facts -----------------------------------------------------------
+
+/// A check that lists every change fact as `path:change:before>after`.
+const CHANGES: &str = concat!(
+    "def facts(p):\n",
+    "    c = p[\"comparison\"]\n",
+    "    if c == None:\n",
+    "        return []\n",
+    "    out = []\n",
+    "    for ch in c[\"changes\"]:\n",
+    "        b = ch[\"before\"][\"classification\"] + \"/\" + str(ch[\"before\"][\"bytes\"]) if ch[\"before\"] != None else \"-\"\n",
+    "        a = ch[\"after\"][\"classification\"] + \"/\" + str(ch[\"after\"][\"bytes\"]) if ch[\"after\"] != None else \"-\"\n",
+    "        out.append(\"%s:%s:%s>%s\" % (ch[\"path\"], ch[\"change\"], b, a))\n",
+    "    return [warning(\"changes \" + \" \".join(out), resource = \"note-a\")]\n",
+    "schema(\"example/test/note@1\", shape = \"note.schema.toml\")\n",
+    "check(\"facts\", facts)\n",
+);
+
+#[test]
+fn change_facts_cover_the_contract_surface_and_nothing_else() {
+    let project = Project::with_note();
+    project.file(common::ENTRY, CHANGES);
+    project.file(
+        "bearout.toml",
+        &format!("{}\n[documents]\nroots = [\"notes\"]\n", common::BOOTSTRAP),
+    );
+    project.file("notes/keep.md", "# Keep\n");
+    project.file("notes/gone.md", "# Gone\n");
+    project.file("notes/edit.md", "# Edit\n");
+    project.file(
+        "content/note-old.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-old\"\ntitle = \"Old\"\n+++\n",
+    );
+    project.file("unrelated.txt", "not part of the contract surface\n");
+    project.git_init();
+    let old = project.commit_all("old");
+
+    // Equal snapshots: no change facts, from every candidate source.
+    for source in [
+        Source::WorkingDirectory,
+        Source::Index,
+        Source::Revision("HEAD".to_owned()),
+    ] {
+        let report = project.run(Command::Check, &options(source, &old));
+        assert_clean(&report);
+        assert_line(&report, "check `facts`: changes ");
+        assert!(
+            lines(&report)[0].ends_with("changes "),
+            "{:?}",
+            lines(&report)
+        );
+    }
+
+    // Edit, add, remove, rename, and touch something outside the surface.
+    project.file("notes/edit.md", "# Edited\n");
+    project.file("notes/new.md", "# New\n");
+    project.remove("notes/gone.md");
+    project.git(&["mv", "content/note-old.md", "content/note-renamed.md"]);
+    project.file("unrelated.txt", "still not part of it\n");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[documents]\nroots = [\"notes\"]\n# a comment\n",
+            common::BOOTSTRAP
+        ),
+    );
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+    assert_clean(&report);
+    assert_line(
+        &report,
+        "changes bearout.toml:modified:manifest/123>manifest/135 content/note-old.md:removed:resource/69>- content/note-renamed.md:added:->resource/69 notes/edit.md:modified:document/7>document/9 notes/gone.md:removed:document/7>- notes/new.md:added:->document/6",
+    );
+    // The same facts through the index once staged, and identical reports
+    // on repeated runs.
+    project.git(&["add", "-A", "."]);
+    let first = project.run(Command::Check, &options(Source::Index, &old));
+    let second = project.run(Command::Check, &options(Source::Index, &old));
+    assert_eq!(lines(&first), lines(&report));
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&second).unwrap()
+    );
+}
+
+#[test]
+fn reclassification_and_a_missing_manifest_show_in_the_facts() {
+    let project = Project::with_note();
+    project.file(common::ENTRY, CHANGES);
+    project.file(
+        "bearout.toml",
+        &format!("{}\n[documents]\nroots = [\"notes\"]\n", common::BOOTSTRAP),
+    );
+    project.file(
+        "notes/n.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-n\"\ntitle = \"N\"\n+++\n",
+    );
+    project.git_init();
+    let as_document = project.commit_all("as document");
+    // The same bytes, now selected as a resource root instead.
+    project.file(
+        "bearout.toml",
+        &common::BOOTSTRAP.replace("roots = [\"content\"]", "roots = [\"content\", \"notes\"]"),
+    );
+    let report = project.run(
+        Command::Check,
+        &options(Source::WorkingDirectory, &as_document),
+    );
+    assert_clean(&report);
+    assert_eq!(report.resources, 2);
+    assert_line(&report, "notes/n.md:modified:document/65>resource/65");
+
+    // Against a revision with no bearout.toml, everything is added, the
+    // manifest included.
+    std::fs::remove_file(project.path().join("bearout.toml")).expect("remove");
+    let empty = project.commit_all("no manifest");
+    project.file(
+        "bearout.toml",
+        &common::BOOTSTRAP.replace("roots = [\"content\"]", "roots = [\"content\", \"notes\"]"),
+    );
+    let report = project.run(Command::Check, &options(Source::WorkingDirectory, &empty));
+    assert_clean(&report);
+    assert_line(&report, "changes bearout.toml:added:->manifest/");
+    assert_line(&report, "content/note-a.md:added:->resource/");
+    assert_line(&report, "notes/n.md:added:->resource/65");
+}

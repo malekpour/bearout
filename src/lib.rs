@@ -22,6 +22,7 @@
 //! capability, which the Git-backed sources do not have.
 
 pub mod bootstrap;
+mod changes;
 mod document;
 mod envelope;
 mod fs;
@@ -244,6 +245,8 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         .read_text(&manifest_path)
         .map_err(|error| format!("cannot read {MANIFEST_NAME} in {}: {error}", root.display()))?;
     let bootstrap = bootstrap::parse(&manifest_text)?;
+    let manifest_entry =
+        changes::SurfaceEntry::new(changes::Classification::Manifest, manifest_text.as_bytes());
     projection::check_resource_roots(tree, &bootstrap)?;
     if !tree.is_dir(&bootstrap.rules_root) {
         return Err(format!(
@@ -268,12 +271,13 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     // Phases: discovery and parsing. Resources first; a path they claim is
     // never also a schema-less document.
     let mut gathered_diagnostics = Vec::new();
-    let gathered = projection::gather(
+    let mut gathered = projection::gather(
         tree,
         &bootstrap,
         &bootstrap.limits,
         &mut gathered_diagnostics,
     )?;
+    gathered.surface.insert(manifest_path, manifest_entry);
     report.extend(gathered_diagnostics);
     report.resources = gathered.files.len();
     report.documents = gathered.document_paths.len();
@@ -338,16 +342,23 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         .map(|index| &resources[*index])
         .collect();
 
-    // Phase: repository policy.
+    // Phase: repository policy. Change facts come from the surfaces both
+    // sides recorded while reading, never from a second read.
     let comparison = baseline
         .as_ref()
         .zip(historical.as_ref())
-        .map(|(baseline, projection)| policy::views::SideView {
-            info: Some(&baseline.info),
-            resources: &projection.resources,
-            indexes: projection.valid_indexes(),
-            graph: &projection.graph,
-            documents: &projection.documents,
+        .map(|(baseline, projection)| {
+            let changes = changes::between(&projection.surface, &candidate.surface);
+            (
+                policy::views::SideView {
+                    info: Some(&baseline.info),
+                    resources: &projection.resources,
+                    indexes: projection.valid_indexes(),
+                    graph: &projection.graph,
+                    documents: &projection.documents,
+                },
+                changes,
+            )
         });
     let views = policy::views::Views::build(
         policy::views::SideView {
