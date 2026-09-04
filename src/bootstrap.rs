@@ -47,6 +47,14 @@ pub struct Limits {
     /// Maximum total bytes read for hygiene in one run: selected files,
     /// `.editorconfig` files, and formatter support files together.
     pub hygiene_bytes: u64,
+    /// Maximum number of fixture cases in one suite. Experimental.
+    pub fixture_cases: usize,
+    /// Maximum number of mutations across every case of one suite.
+    /// Experimental.
+    pub fixture_mutations: usize,
+    /// Maximum total bytes of fixture files and payloads read for one
+    /// suite. Experimental.
+    pub fixture_bytes: u64,
 }
 
 impl Default for Limits {
@@ -74,6 +82,9 @@ impl Default for Limits {
             files: 20_000,
             file_bytes: 8 * 1024 * 1024,
             hygiene_bytes: 256 * 1024 * 1024,
+            fixture_cases: 200,
+            fixture_mutations: 2_000,
+            fixture_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -104,6 +115,10 @@ pub struct Bootstrap {
     /// Repository-declared external formatters, in declaration order.
     /// Experimental.
     pub formatters: Vec<Formatter>,
+    /// Contract fixture files, sorted: the only files `bearout test`
+    /// reads cases from. Empty when the bootstrap declares no
+    /// `[fixtures]`. Experimental.
+    pub fixture_files: Vec<ProjectPath>,
     /// Resource limits.
     pub limits: Limits,
 }
@@ -172,13 +187,22 @@ impl Bootstrap {
     pub fn selects_documents(&self) -> bool {
         !self.document_roots.is_empty() || !self.document_files.is_empty()
     }
+
+    /// `true` when the bootstrap declares a `[fixtures]` table.
+    #[must_use]
+    pub fn declares_fixtures(&self) -> bool {
+        !self.fixture_files.is_empty()
+    }
 }
+
+/// The file extension every fixture file carries.
+pub const FIXTURE_EXTENSION: &str = "toml";
 
 /// The file extension of a Markdown document, for resources and
 /// schema-less documents alike.
 pub const MARKDOWN_EXTENSION: &str = "md";
 
-const TOP_LEVEL: [&str; 10] = [
+const TOP_LEVEL: [&str; 11] = [
     "version",
     "entry",
     "resources",
@@ -188,6 +212,7 @@ const TOP_LEVEL: [&str; 10] = [
     "documents",
     "hygiene",
     "formatters",
+    "fixtures",
     "limits",
 ];
 
@@ -299,6 +324,11 @@ pub fn parse(text: &str) -> Result<Bootstrap, String> {
         Some(_) => return Err("`formatters` must be an array of tables".to_owned()),
     };
 
+    let fixture_files = match table(root, "fixtures")? {
+        Some(fixtures) => parse_fixtures(fixtures)?,
+        None => Vec::new(),
+    };
+
     let limits = match table(root, "limits")? {
         Some(limits) => parse_limits(limits)?,
         None => Limits::default(),
@@ -315,10 +345,66 @@ pub fn parse(text: &str) -> Result<Bootstrap, String> {
         document_files,
         hygiene,
         formatters,
+        fixture_files,
         limits,
     };
     check_roots(&bootstrap)?;
+    check_fixture_files(&bootstrap)?;
     Ok(bootstrap)
+}
+
+/// `[fixtures]`: `files` names every fixture file one by one. Nothing is
+/// scanned for; the list is sorted, a repeated entry is an error, and
+/// every file carries the TOML extension.
+fn parse_fixtures(fixtures: &Table) -> Result<Vec<ProjectPath>, String> {
+    reject_unknown(fixtures, "fixtures", &["files"])?;
+    let mut files = path_list(
+        required(fixtures, "files").map_err(|_| "`fixtures.files` is required".to_owned())?,
+        "fixtures.files",
+    )?;
+    if files.is_empty() {
+        return Err("`fixtures.files` must name at least one fixture file".to_owned());
+    }
+    for file in &files {
+        if file.as_str().is_empty() {
+            return Err("`fixtures.files` must not include the project root".to_owned());
+        }
+        if file.extension() != Some(FIXTURE_EXTENSION) {
+            return Err(format!(
+                "`fixtures.files` `{file}` must be a `.{FIXTURE_EXTENSION}` file"
+            ));
+        }
+        if file.as_str() == MANIFEST_NAME || file.as_str() == STATE_NAME {
+            return Err(format!(
+                "`fixtures.files` `{file}` is a Bearout manifest, not a fixture file"
+            ));
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// A fixture file must not lie where discovery or delivery would treat
+/// it as something else: beneath a resource root it would be parsed as a
+/// resource, beneath an output root it could be delivered over.
+fn check_fixture_files(bootstrap: &Bootstrap) -> Result<(), String> {
+    for file in &bootstrap.fixture_files {
+        for root in &bootstrap.resource_roots {
+            if file.is_within(root) {
+                return Err(format!(
+                    "`fixtures.files` `{file}` lies beneath resource root `{root}`; fixture files must not be discovered as resources"
+                ));
+            }
+        }
+        for root in &bootstrap.output_roots {
+            if file.is_within(root) {
+                return Err(format!(
+                    "`fixtures.files` `{file}` lies beneath output root `{root}`; fixture files must not be generated outputs"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `[documents]`: `roots` are walked recursively, `files` are named one by
@@ -546,7 +632,7 @@ fn parse_formatter(table: &Table, index: usize) -> Result<Formatter, String> {
 }
 
 fn parse_limits(limits: &Table) -> Result<Limits, String> {
-    const KEYS: [&str; 12] = [
+    const KEYS: [&str; 15] = [
         "ticks",
         "heap_bytes",
         "call_stack",
@@ -559,6 +645,9 @@ fn parse_limits(limits: &Table) -> Result<Limits, String> {
         "files",
         "file_bytes",
         "hygiene_bytes",
+        "fixture_cases",
+        "fixture_mutations",
+        "fixture_bytes",
     ];
     reject_unknown(limits, "limits", &KEYS)?;
     let mut result = Limits::default();
@@ -612,6 +701,17 @@ fn parse_limits(limits: &Table) -> Result<Limits, String> {
     }
     if let Some(value) = positive("hygiene_bytes")? {
         result.hygiene_bytes = value;
+    }
+    if let Some(value) = positive("fixture_cases")? {
+        result.fixture_cases =
+            usize::try_from(value).map_err(|_| "`limits.fixture_cases` is too large".to_owned())?;
+    }
+    if let Some(value) = positive("fixture_mutations")? {
+        result.fixture_mutations = usize::try_from(value)
+            .map_err(|_| "`limits.fixture_mutations` is too large".to_owned())?;
+    }
+    if let Some(value) = positive("fixture_bytes")? {
+        result.fixture_bytes = value;
     }
     Ok(result)
 }
@@ -962,5 +1062,73 @@ mod tests {
         assert!(parse(&text).unwrap_err().contains("project root"));
         let text = MINIMAL.replace("roots = [\"content\"]", "roots = [\"../x\"]");
         assert!(parse(&text).unwrap_err().contains("normalized"));
+    }
+
+    #[test]
+    fn declares_fixture_files_explicitly() {
+        let bootstrap = parse(MINIMAL).unwrap();
+        assert!(!bootstrap.declares_fixtures());
+        assert_eq!(bootstrap.limits.fixture_cases, 200);
+        assert_eq!(bootstrap.limits.fixture_mutations, 2_000);
+        assert_eq!(bootstrap.limits.fixture_bytes, 16 * 1024 * 1024);
+
+        let text = format!(
+            "{MINIMAL}[fixtures]\nfiles = [\"tests/b.test.toml\", \"tests/a.test.toml\"]\n[limits]\nfixture_cases = 3\nfixture_mutations = 9\nfixture_bytes = 4096\n"
+        );
+        let bootstrap = parse(&text).unwrap();
+        assert!(bootstrap.declares_fixtures());
+        let files: Vec<&str> = bootstrap
+            .fixture_files
+            .iter()
+            .map(ProjectPath::as_str)
+            .collect();
+        assert_eq!(files, ["tests/a.test.toml", "tests/b.test.toml"], "sorted");
+        assert_eq!(bootstrap.limits.fixture_cases, 3);
+        assert_eq!(bootstrap.limits.fixture_mutations, 9);
+        assert_eq!(bootstrap.limits.fixture_bytes, 4096);
+
+        let cases = [
+            ("[fixtures]\n", "`fixtures.files` is required"),
+            ("[fixtures]\nfiles = []\n", "at least one fixture file"),
+            ("[fixtures]\nfiles = \"a.toml\"\n", "array of strings"),
+            (
+                "[fixtures]\nfiles = [\"a.toml\", \"a.toml\"]\n",
+                "lists `a.toml` twice",
+            ),
+            ("[fixtures]\nfiles = [\"a.md\"]\n", "must be a `.toml` file"),
+            ("[fixtures]\nfiles = [\"\"]\n", "project root"),
+            ("[fixtures]\nfiles = [\"/a.toml\"]\n", "absolute"),
+            ("[fixtures]\nfiles = [\"../a.toml\"]\n", "normalized"),
+            (
+                "[fixtures]\nfiles = [\"bearout.toml\"]\n",
+                "is a Bearout manifest",
+            ),
+            (
+                "[fixtures]\nfiles = [\"bearout-state.toml\"]\n",
+                "is a Bearout manifest",
+            ),
+            (
+                "[fixtures]\nfiles = [\"content/a.toml\"]\n",
+                "beneath resource root `content`",
+            ),
+            (
+                "[outputs]\nroots = [\"generated\"]\n[fixtures]\nfiles = [\"generated/a.toml\"]\n",
+                "beneath output root `generated`",
+            ),
+            (
+                "[fixtures]\nfiles = [\"a.toml\"]\nroots = [\"x\"]\n",
+                "unknown key `fixtures.roots`",
+            ),
+            ("[limits]\nfixture_cases = 0\n", "limits.fixture_cases"),
+            (
+                "[limits]\nfixture_mutations = -1\n",
+                "limits.fixture_mutations",
+            ),
+            ("[limits]\nfixture_bytes = 0\n", "limits.fixture_bytes"),
+        ];
+        for (body, expected) in cases {
+            let error = parse(&format!("{MINIMAL}{body}")).unwrap_err();
+            assert!(error.contains(expected), "{body:?} -> {error}");
+        }
     }
 }
