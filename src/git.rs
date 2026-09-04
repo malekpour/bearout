@@ -348,6 +348,28 @@ impl Git {
     /// than `limit` bytes plus one probe byte: an output past the limit
     /// kills the child and is an error, so nothing larger is ever held.
     pub(crate) fn output_within(&self, args: &[&str], limit: usize) -> Result<Vec<u8>, GitError> {
+        let probe = self.probe_within(args, limit)?;
+        if probe.status == Some(0) {
+            Ok(probe.output)
+        } else {
+            Err(GitError(format!(
+                "git {} failed: {}",
+                probe.subcommand, probe.stderr
+            )))
+        }
+    }
+
+    /// Run one command and keep its exit status instead of turning a
+    /// non-zero exit into an error, for callers that must tell one Git
+    /// answer from another (a reference that is absent, exit 1, from one
+    /// that cannot be read, exit 128). Everything else is as for
+    /// [`Git::output`]: the same environment, bounded streams, sanitized
+    /// error text, and child teardown.
+    pub(crate) fn probe(&self, args: &[&str]) -> Result<Probe, GitError> {
+        self.probe_within(args, MAX_LISTING_BYTES)
+    }
+
+    fn probe_within(&self, args: &[&str], limit: usize) -> Result<Probe, GitError> {
         let limit = limit.min(MAX_LISTING_BYTES);
         let mut child = self
             .command(args)
@@ -387,15 +409,13 @@ impl Git {
             Ok(Err(error)) => format!("error output could not be read: {error}").into_bytes(),
             Err(_) => b"error output could not be read".to_vec(),
         };
-        if status.success() {
-            Ok(output)
-        } else {
-            Err(GitError(format!(
-                "git {} failed: {}",
-                args[0],
-                sanitize(&stderr)
-            )))
-        }
+        Ok(Probe {
+            subcommand: args[0].to_owned(),
+            status: status.code(),
+            output,
+            stderr_empty: stderr.iter().all(u8::is_ascii_whitespace),
+            stderr: sanitize(&stderr),
+        })
     }
 
     /// The command's standard output as text with one trailing newline
@@ -439,6 +459,27 @@ impl Git {
             Err(_) => self.line(&["hash-object", "-t", "tree", "--stdin"])?,
         };
         ObjectId::parse(&text).map_err(GitError)
+    }
+}
+
+/// The bounded result of one Git call, exit status kept.
+pub(crate) struct Probe {
+    /// The subcommand, for messages.
+    pub(crate) subcommand: String,
+    /// The exit code, `None` when the child was ended by a signal.
+    pub(crate) status: Option<i32>,
+    pub(crate) output: Vec<u8>,
+    /// The sanitized first meaningful line of standard error.
+    pub(crate) stderr: String,
+    /// `true` when Git wrote nothing at all to standard error, not even a
+    /// warning.
+    pub(crate) stderr_empty: bool,
+}
+
+impl Probe {
+    /// The failure this probe would have been as an ordinary call.
+    pub(crate) fn failure(&self) -> GitError {
+        GitError(format!("git {} failed: {}", self.subcommand, self.stderr))
     }
 }
 

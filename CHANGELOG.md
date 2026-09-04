@@ -119,8 +119,11 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   commit's author has no timestamp or timezone, because Git would only
   invent the current clock), byte-exact messages whose logical lines end
   at CRLF, LF, or a lone CR, ordered parents (an unborn branch only when
-  Git proves it, and a `MERGE_HEAD` that must be a regular file naming
-  existing commits), and changes against the first parent (or the empty
+  Git proves it by a symbolic `HEAD` to a reference that is absent, exit
+  1 of `show-ref --verify`, never one Git cannot read; and a `MERGE_HEAD`
+  that must be a regular file naming existing commits by the full
+  identity width of the repository's object format), and changes
+  against the first parent (or the empty
   tree for a root) with exact modes and object identities and no rename
   detection. `error()` and `warning()` accept `commit=` for a key
   of the view or nothing for a range-wide finding; new codes B032 and

@@ -549,11 +549,51 @@ fn pending_head(git: &Git) -> Result<Option<ObjectId>, String> {
             "cannot resolve HEAD: `{target}` is not a reference"
         ));
     }
-    match git.line(&["show-ref", "--verify", "-q", "--", &target]) {
-        Ok(_) => Err(format!(
+    // Absence is proven only by exit 1 of `show-ref --verify`; exit 0 is
+    // a reference that exists, and anything else (malformed packed
+    // references, an unreadable store) is an operational failure. A
+    // malformed loose reference is then excluded by asking `rev-parse` as
+    // well: it must also answer exit 1 and say nothing, since Git warns
+    // about a broken reference it ignores.
+    let shown = git
+        .probe(&["show-ref", "--verify", "-q", "--", &target])
+        .map_err(|error| format!("cannot resolve HEAD: {error}"))?;
+    match shown.status {
+        Some(0) => {
+            return Err(format!(
+                "cannot resolve HEAD: `{target}` exists but does not name a commit"
+            ));
+        }
+        Some(1) => {}
+        _ => return Err(format!("cannot resolve HEAD: {}", shown.failure())),
+    }
+    let parsed = git
+        .probe(&["rev-parse", "--verify", "-q", "--end-of-options", &target])
+        .map_err(|error| format!("cannot resolve HEAD: {error}"))?;
+    match parsed.status {
+        Some(1) if parsed.stderr_empty => Ok(None),
+        Some(1) => Err(format!(
+            "cannot resolve HEAD: `{target}` is not readable as a reference: {}",
+            parsed.stderr
+        )),
+        Some(0) => Err(format!(
             "cannot resolve HEAD: `{target}` exists but does not name a commit"
         )),
-        Err(_) => Ok(None),
+        _ => Err(format!("cannot resolve HEAD: {}", parsed.failure())),
+    }
+}
+
+/// The width of a full object identity in this repository's object
+/// format, so that an abbreviation is never accepted as an identity.
+fn object_id_width(git: &Git) -> Result<usize, String> {
+    match git
+        .line(&["rev-parse", "--show-object-format"])
+        .map_err(|error| format!("cannot determine the object format: {error}"))?
+        .as_str()
+    {
+        "sha1" => Ok(40),
+        "sha256" => Ok(64),
+        other => Err(format!("unsupported object format `{other}`")),
     }
 }
 
@@ -580,14 +620,15 @@ fn merge_heads(git: &Git, budget: &mut Budget) -> Result<Vec<ObjectId>, String> 
     let bytes = read_file_within(&merge_head, budget.listing_limit(), "MERGE_HEAD")?;
     budget.charge(bytes.len() as u64, "MERGE_HEAD")?;
     let text = String::from_utf8(bytes).map_err(|_| "MERGE_HEAD is not valid UTF-8".to_owned())?;
+    let width = object_id_width(git)?;
     let mut parents = Vec::new();
     for line in text.lines() {
         if line.is_empty() {
             continue;
         }
-        if !matches!(line.len(), 40 | 64) {
+        if line.len() != width {
             return Err(format!(
-                "MERGE_HEAD holds `{line}`, which is not a full commit identity"
+                "MERGE_HEAD holds `{line}`, which is not a full commit identity of this repository's object format"
             ));
         }
         let id = ObjectId::parse(line).map_err(|error| format!("MERGE_HEAD: {error}"))?;

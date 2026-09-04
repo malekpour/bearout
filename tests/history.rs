@@ -1498,6 +1498,19 @@ fn pending_parents_fail_closed_on_anything_but_a_proven_unborn_branch() {
         report.fatal.is_some(),
         "a branch naming a missing object is fatal"
     );
+    // Malformed loose reference storage for HEAD's branch is fatal, never
+    // an unborn branch.
+    std::fs::write(&main_ref, "garbage\n").unwrap();
+    let report = message(&project, &file);
+    assert!(
+        report.fatal.is_some(),
+        "a malformed loose reference is fatal"
+    );
+    assert!(
+        report.fatal.as_deref().unwrap().contains("HEAD"),
+        "{:?}",
+        report.fatal
+    );
     if let Some(bytes) = main_original {
         std::fs::write(&main_ref, bytes).unwrap();
     }
@@ -1516,7 +1529,48 @@ fn pending_parents_fail_closed_on_anything_but_a_proven_unborn_branch() {
             .is_empty()
     );
     assert!(commits(&report)[0]["change_basis"].is_null());
+    // Malformed packed reference storage cannot become an unborn branch.
+    let packed_original = std::fs::read(&packed).ok();
+    std::fs::write(
+        &packed,
+        "# pack-refs with: peeled fully-peeled sorted \nzzzz refs/heads/unborn\n",
+    )
+    .unwrap();
+    let report = message(&project, &file);
+    assert!(report.fatal.is_some(), "malformed packed-refs are fatal");
+    assert!(
+        report.fatal.as_deref().unwrap().contains("packed-refs"),
+        "{:?}",
+        report.fatal
+    );
+    match packed_original {
+        Some(bytes) => std::fs::write(&packed, bytes).unwrap(),
+        None => std::fs::remove_file(&packed).unwrap(),
+    }
+    // A malformed loose file at the unborn branch's own name is fatal too.
+    let unborn_ref = git_dir.join("refs/heads/unborn");
+    std::fs::write(&unborn_ref, "garbage\n").unwrap();
+    let report = message(&project, &file);
+    assert!(
+        report.fatal.is_some(),
+        "a malformed loose reference at the branch is fatal"
+    );
+    std::fs::remove_file(&unborn_ref).unwrap();
+    assert_captured(&message(&project, &file));
     std::fs::write(&head_file, "ref: refs/heads/main\n").unwrap();
+
+    // A MERGE_HEAD entry must have this repository's full identity width:
+    // an abbreviation, even one of another format's full width, is
+    // refused before any object lookup.
+    let sixty_four = "a".repeat(64);
+    std::fs::write(&merge_head, format!("{sixty_four}\n")).unwrap();
+    assert_history_fatal(
+        &message(&project, &file),
+        "is not a full commit identity of this repository's object format",
+    );
+    std::fs::write(&merge_head, format!("{}\n", &head[..12])).unwrap();
+    assert_history_fatal(&message(&project, &file), "is not a full commit identity");
+    std::fs::remove_file(&merge_head).unwrap();
 }
 
 #[test]
