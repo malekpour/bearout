@@ -62,11 +62,21 @@ impl Project {
 
     /// Copy a fixture directory from `tests/fixtures/<name>`.
     pub fn fixture(name: &str) -> Self {
+        Self::copied(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+        )
+    }
+
+    /// Copy a sample from `samples/<name>`.
+    pub fn sample(name: &str) -> Self {
+        Self::copied(&samples_dir().join(name))
+    }
+
+    fn copied(source: &Path) -> Self {
         let dir = tempfile::tempdir().expect("temporary project");
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name);
-        copy_dir(&source, dir.path());
+        copy_dir(source, dir.path());
         let root = dir.path().to_path_buf();
         Self { dir, root }
     }

@@ -4,6 +4,7 @@
 
 load("decision.star", "validate_decision")
 load("log.star", "check_numbering_is_contiguous", "check_supersession_is_reciprocal")
+load("immutability.star", "check_protected_records")
 load("decision-index.star", "plan_decision_index")
 
 schema(
@@ -13,4 +14,5 @@ schema(
 )
 check("supersession-is-reciprocal", check_supersession_is_reciprocal)
 check("numbering-is-contiguous", check_numbering_is_contiguous)
+check("protected-records-are-immutable", check_protected_records)
 generator("decision-index", plan_decision_index)

@@ -30,6 +30,17 @@ Synthetic. The decisions are about this sample's own conventions.
 - **Generation with provenance.** `decision-index` renders
   `generated/decision-index.md`; the kernel stamps the SPDX and provenance
   header and records ownership in `bearout-state.toml`.
+- **Policy-defined immutability.** With `--baseline <rev>`,
+  `protected-records-are-immutable` in `rules/immutability.star` compares
+  the candidate with the historical log that Bearout projects through this
+  policy: a resolved record (accepted, rejected, or superseded) may not be
+  deleted, may not change its date, rulings, or Decision section, and may
+  change status only from accepted to superseded; its title, relations,
+  and Context may be corrected; moving it is a warning; new records are
+  free. This README is a selected document, and removing it from the
+  selection is reported against the baseline. Without a baseline the check
+  is inactive. Which records are protected and what may change is this
+  repository's decision, not the kernel's.
 
 ## Resource model
 
@@ -57,6 +68,11 @@ Records: `decision-0001` accepted, `decision-0002` superseded,
   for that record.
 - Edit `generated/decision-index.md` by hand: `bearout generate --check`
   reports B020 stale.
+- Commit the sample, then change a ruling's `text` in `decision-0001` and
+  run `bearout check --baseline HEAD`: B015 `protected-rulings`. Delete
+  `decision-0005.md` instead: B015 `protected-record-deleted`, reported on
+  the baseline side as `baseline:records/decision-0005.md`. Change only a
+  title: clean.
 
 ## Sample omissions
 
@@ -64,8 +80,8 @@ No warnings, no header-only resources, no multi-output generators.
 
 ## Engine gaps
 
-- **Immutability is a policy intent, not a check.** An accepted record
-  should not change between commits. Bearout reads one tree and has no
-  history-aware phase, so this is documented, not enforced.
 - **Bare citations.** Only Markdown links are resolved. A ruling id written
   as plain text is not checked.
+- **No inferred baseline.** Immutability is checked only against a
+  revision named explicitly; nothing compares against a parent or a merge
+  base on its own.

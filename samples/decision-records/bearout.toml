@@ -15,3 +15,6 @@ root = "templates"
 [outputs]
 roots = ["generated"]
 license = "Apache-2.0"
+
+[documents]
+files = ["README.md"]
