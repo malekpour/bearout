@@ -110,6 +110,11 @@ pub struct Options {
     /// Where to read the project from. The default is the working
     /// directory.
     pub source: Source,
+    /// An explicit Git revision to compare the project against, from the
+    /// same repository. Nothing is inferred: no `HEAD`, parent, merge base,
+    /// or default branch. The baseline is read-only historical evidence;
+    /// only the candidate's policy runs. **Experimental.**
+    pub baseline: Option<String>,
 }
 
 /// Run Bearout on the project rooted at `root`, reading it from
@@ -144,6 +149,26 @@ pub fn generate(root: &Path, mode: Mode) -> Report {
 enum Opened {
     Working(WorkingDir),
     Git(GitTree, SourceInfo),
+}
+
+/// The comparison baseline: one resolved revision and its identity.
+struct Baseline {
+    tree: GitTree,
+    info: SourceInfo,
+}
+
+impl Baseline {
+    fn open(root: &Path, revision: &str) -> Result<Self, String> {
+        let (tree, id) = GitTree::baseline(root, revision)
+            .map_err(|error| format!("cannot read the baseline: {error}"))?;
+        let info = SourceInfo {
+            kind: "revision".to_owned(),
+            revision: Some(revision.to_owned()),
+            tree: Some(id.to_string()),
+            digest: tree.digest().to_owned(),
+        };
+        Ok(Self { tree, info })
+    }
 }
 
 impl Opened {
@@ -224,9 +249,14 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         );
     }
 
-    // Phase: bootstrap. The source is opened before anything is read, so
-    // every input of the run, the bootstrap included, comes from one tree.
+    // Phase: bootstrap. The sources are opened before anything is read, so
+    // every input of the run, the bootstrap included, comes from one tree,
+    // and the baseline is pinned before the candidate is examined.
     let opened = Opened::open(root, &options.source)?;
+    let baseline = match &options.baseline {
+        Some(revision) => Some(Baseline::open(root, revision)?),
+        None => None,
+    };
     let tree = opened.tree();
     let manifest_path = ProjectPath::parse(MANIFEST_NAME).expect("constant path");
     let manifest_text = tree
@@ -278,6 +308,7 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     report.extend(policy_diagnostics);
     let Some(policy) = policy else {
         report.source = opened.info();
+        report.baseline = baseline.as_ref().map(|baseline| baseline.info.clone());
         report.finish();
         return Ok(report);
     };
@@ -374,6 +405,12 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     report.max_ticks = policy.max_ticks.get();
     report.max_heap_bytes = policy.max_heap_bytes.get();
     report.source = opened.info();
+    report.baseline = baseline.map(|baseline| {
+        // The baseline tree is historical evidence only; nothing is ever
+        // written to it, and dropping it here ends its life with the run.
+        drop(baseline.tree);
+        baseline.info
+    });
     report.finish();
     Ok(report)
 }

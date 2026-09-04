@@ -37,13 +37,17 @@ struct SourceArgs {
     /// working directory. The name is resolved once, at the start.
     #[arg(long, value_name = "REV")]
     revision: Option<String>,
+    /// Compare against one Git revision of the same repository, resolved
+    /// once. Nothing is inferred; name the baseline explicitly.
+    #[arg(long, value_name = "REV")]
+    baseline: Option<String>,
 }
 
 impl SourceArgs {
-    fn source(self) -> Source {
-        match (self.index, self.revision) {
+    fn source(&self) -> Source {
+        match (self.index, &self.revision) {
             (true, _) => Source::Index,
-            (false, Some(revision)) => Source::Revision(revision),
+            (false, Some(revision)) => Source::Revision(revision.clone()),
             (false, None) => Source::WorkingDirectory,
         }
     }
@@ -90,6 +94,7 @@ fn main() -> ExitCode {
     };
     let options = Options {
         source: source.source(),
+        baseline: source.baseline,
         ..Options::default()
     };
     let report = bearout::run(&path, command, &options);

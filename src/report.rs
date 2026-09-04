@@ -241,6 +241,10 @@ pub struct Report {
     /// The Git-backed source examined, when one was selected. Experimental.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceInfo>,
+    /// The comparison baseline, when one was requested: always a revision.
+    /// Experimental.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<SourceInfo>,
     /// Findings in stable order.
     pub diagnostics: Vec<Diagnostic>,
     /// Generated outputs, as project-relative paths, only when generation

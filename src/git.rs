@@ -1065,6 +1065,22 @@ impl GitTree {
     /// the tree the run reads. A blob, an unknown name, or a prefix absent
     /// from the revision is an error.
     pub fn revision(root: &Path, revision: &str) -> Result<(Self, ObjectId), GitError> {
+        Self::capture_revision(root, revision, false)
+    }
+
+    /// Like [`GitTree::revision`], for a comparison baseline: a revision
+    /// that predates the project directory yields an empty tree, so that a
+    /// wholly added project can be compared. The revision itself must
+    /// still resolve.
+    pub fn baseline(root: &Path, revision: &str) -> Result<(Self, ObjectId), GitError> {
+        Self::capture_revision(root, revision, true)
+    }
+
+    fn capture_revision(
+        root: &Path,
+        revision: &str,
+        empty_when_project_absent: bool,
+    ) -> Result<(Self, ObjectId), GitError> {
         if revision.is_empty()
             || revision.starts_with('-')
             || revision.chars().any(char::is_control)
@@ -1106,20 +1122,26 @@ impl GitTree {
             let prefix = String::from_utf8(location.prefix.clone())
                 .map_err(|_| GitError("the project prefix is not valid UTF-8".to_owned()))?;
             let prefix = prefix.trim_end_matches('/');
-            let subtree = git
-                .line(&["rev-parse", "--verify", "-q", &format!("{tree}:{prefix}")])
-                .map_err(|_| {
-                    GitError(format!(
+            let subtree = git.line(&["rev-parse", "--verify", "-q", &format!("{tree}:{prefix}")]);
+            match subtree {
+                Ok(subtree) => {
+                    let subtree = ObjectId::parse(&subtree).map_err(GitError)?;
+                    if git.object_type(&subtree)? != "tree" {
+                        return Err(GitError(format!(
+                            "`{prefix}` is not a directory in revision `{revision}`"
+                        )));
+                    }
+                    subtree
+                }
+                Err(_) if empty_when_project_absent => {
+                    return Ok((Self::from_entries(git, Entries::default()), tree));
+                }
+                Err(_) => {
+                    return Err(GitError(format!(
                         "revision `{revision}` does not contain the project directory `{prefix}`"
-                    ))
-                })?;
-            let subtree = ObjectId::parse(&subtree).map_err(GitError)?;
-            if git.object_type(&subtree)? != "tree" {
-                return Err(GitError(format!(
-                    "`{prefix}` is not a directory in revision `{revision}`"
-                )));
+                    )));
+                }
             }
-            subtree
         };
         // `--full-tree` lifts the default restriction to the current
         // directory's prefix, which would hide a subtree listed by object.
