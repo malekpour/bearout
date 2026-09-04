@@ -14,11 +14,18 @@
 //! planning, rendering, and delivery. A resource that fails an earlier phase
 //! never reaches a later one, and generation runs only on an error-free
 //! project.
+//!
+//! Every phase before delivery reads the project through one read-only
+//! tree, selected by [`Source`] before anything is read: the live working
+//! directory, the Git index as captured at the start of the run, or one
+//! resolved Git revision. Delivery needs the working directory's write
+//! capability, which the Git-backed sources do not have.
 
 pub mod bootstrap;
 mod envelope;
 mod fs;
 mod generate;
+mod git;
 mod graph;
 mod identity;
 mod markdown;
@@ -26,6 +33,7 @@ mod paths;
 mod policy;
 pub mod report;
 mod shape;
+mod tree;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -37,14 +45,16 @@ use serde_json::Value;
 pub use bootstrap::{Bootstrap, Limits, MANIFEST_NAME, STATE_NAME};
 pub use generate::Mode;
 pub use paths::ProjectPath;
-pub use report::{Code, Diagnostic, Report, Severity};
+pub use report::{Code, Diagnostic, Report, Severity, SourceInfo};
 
 use envelope::Resource;
-use fs::ProjectDir;
+use fs::WorkingDir;
+use git::GitTree;
 use policy::values::Finding;
 use policy::{CallOutcome, Policy};
 use report::Code as C;
 use shape::Shape;
+use tree::ReadTree;
 
 /// The Bearout version stamped into provenance.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -63,18 +73,51 @@ pub enum Command {
     Generate(Mode),
 }
 
+/// Where a run reads the project from.
+///
+/// **Experimental.** The Git-backed sources are new and their surface may
+/// change. They require the `git` executable and are read-only: checking
+/// and generation checking work against them, writing generation does not.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// The live working directory at the project root, read through a
+    /// filesystem capability. It may change concurrently with the run;
+    /// Bearout makes no snapshot of it. The only source generation can
+    /// write to.
+    #[default]
+    WorkingDirectory,
+    /// The Git index of the repository owning the project root, as it
+    /// stands when the run starts: the tree a commit would record. Staged
+    /// additions and modifications are present; unstaged modifications,
+    /// untracked files, staged deletions, and intent-to-add entries are
+    /// absent; a staged rename appears only at its destination. An unmerged
+    /// index is a fatal outcome.
+    Index,
+    /// One Git revision of the repository owning the project root: any
+    /// commit-ish or tree-ish Git resolves. The name is resolved exactly
+    /// once and the resolved tree is used for the whole run, even if a
+    /// branch or tag moves meanwhile. An unknown name is a fatal outcome.
+    Revision(String),
+}
+
 /// Run options.
 #[derive(Debug, Default, Clone)]
 pub struct Options {
     /// Set to `true` from another thread to cancel Starlark evaluation.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Where to read the project from. The default is the working
+    /// directory.
+    pub source: Source,
 }
 
-/// Run Bearout on the project rooted at `root`.
+/// Run Bearout on the project rooted at `root`, reading it from
+/// [`Options::source`].
 ///
 /// Never panics on project content. A failure that prevents the run from
-/// completing, such as a missing or invalid bootstrap, is reported in
-/// [`Report::fatal`]; everything else is a diagnostic.
+/// completing, such as a missing or invalid bootstrap, a source that cannot
+/// be opened, a revision that does not resolve, or writing generation
+/// requested against a Git-backed source, is reported in [`Report::fatal`];
+/// everything else is a diagnostic.
 #[must_use]
 pub fn run(root: &Path, command: Command, options: &Options) -> Report {
     match run_inner(root, command, options) {
@@ -83,16 +126,68 @@ pub fn run(root: &Path, command: Command, options: &Options) -> Report {
     }
 }
 
-/// Check a project.
+/// Check a project in its working directory.
 #[must_use]
 pub fn check(root: &Path) -> Report {
     run(root, Command::Check, &Options::default())
 }
 
-/// Check a project, then generate.
+/// Check a project in its working directory, then generate.
 #[must_use]
 pub fn generate(root: &Path, mode: Mode) -> Report {
     run(root, Command::Generate(mode), &Options::default())
+}
+
+/// The tree a run reads, opened before anything else is read.
+enum Opened {
+    Working(WorkingDir),
+    Git(GitTree, SourceInfo),
+}
+
+impl Opened {
+    fn open(root: &Path, source: &Source) -> Result<Self, String> {
+        match source {
+            Source::WorkingDirectory => WorkingDir::open(root)
+                .map(Self::Working)
+                .map_err(|error| format!("cannot open project {}: {error}", root.display())),
+            Source::Index => GitTree::index(root)
+                .map(|tree| {
+                    let info = SourceInfo {
+                        kind: "index".to_owned(),
+                        revision: None,
+                        tree: None,
+                        digest: tree.digest().to_owned(),
+                    };
+                    Self::Git(tree, info)
+                })
+                .map_err(|error| format!("cannot read the Git index: {error}")),
+            Source::Revision(name) => GitTree::revision(root, name)
+                .map(|(tree, id)| {
+                    let info = SourceInfo {
+                        kind: "revision".to_owned(),
+                        revision: Some(name.clone()),
+                        tree: Some(id.to_string()),
+                        digest: tree.digest().to_owned(),
+                    };
+                    Self::Git(tree, info)
+                })
+                .map_err(|error| format!("cannot read Git revision: {error}")),
+        }
+    }
+
+    fn tree(&self) -> &dyn ReadTree {
+        match self {
+            Self::Working(working) => working,
+            Self::Git(tree, _) => tree,
+        }
+    }
+
+    fn info(&self) -> Option<SourceInfo> {
+        match self {
+            Self::Working(_) => None,
+            Self::Git(_, info) => Some(info.clone()),
+        }
+    }
 }
 
 struct Parsed {
@@ -120,35 +215,43 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     let mut report = Report::default();
     let cancel = options.cancel.clone().unwrap_or_default();
 
-    // Phase: bootstrap.
-    let fs = ProjectDir::open(root)
-        .map_err(|error| format!("cannot open project {}: {error}", root.display()))?;
+    if command == Command::Generate(Mode::Write) && options.source != Source::WorkingDirectory {
+        return Err(
+            "generation writes to the working directory; the index and revision sources are read-only and support checking only"
+                .to_owned(),
+        );
+    }
+
+    // Phase: bootstrap. The source is opened before anything is read, so
+    // every input of the run, the bootstrap included, comes from one tree.
+    let opened = Opened::open(root, &options.source)?;
+    let tree = opened.tree();
     let manifest_path = ProjectPath::parse(MANIFEST_NAME).expect("constant path");
-    let manifest_text = fs
+    let manifest_text = tree
         .read_text(&manifest_path)
         .map_err(|error| format!("cannot read {MANIFEST_NAME} in {}: {error}", root.display()))?;
     let bootstrap = bootstrap::parse(&manifest_text)?;
     for root_path in &bootstrap.resource_roots {
-        if !fs.is_dir(root_path) {
+        if !tree.is_dir(root_path) {
             return Err(format!(
                 "resource root `{root_path}` is not a directory inside the project"
             ));
         }
     }
-    if !fs.is_dir(&bootstrap.rules_root) {
+    if !tree.is_dir(&bootstrap.rules_root) {
         return Err(format!(
             "rules root `{}` is not a directory inside the project",
             bootstrap.rules_root
         ));
     }
     if let Some(templates) = &bootstrap.templates_root
-        && !fs.is_dir(templates)
+        && !tree.is_dir(templates)
     {
         return Err(format!(
             "templates root `{templates}` is not a directory inside the project"
         ));
     }
-    if !fs.is_file(&bootstrap.entry) {
+    if !tree.is_file(&bootstrap.entry) {
         return Err(format!(
             "entry module `{}` is not a file inside the project",
             bootstrap.entry
@@ -156,24 +259,25 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     }
 
     // Phase: discovery.
-    let files = discover(&fs, &bootstrap)?;
+    let files = discover(tree, &bootstrap)?;
     report.resources = files.len();
 
     // Phase: parsing.
-    let mut parsed = parse_all(&fs, &bootstrap, &files, &mut report);
+    let mut parsed = parse_all(tree, &bootstrap, &files, &mut report);
 
     // Repository policy is loaded before structural validation because the
     // entry module registers the schemas and shapes that validation needs.
     let mut policy_diagnostics = Vec::new();
-    let policy = policy::load(&fs, &bootstrap, cancel, &mut policy_diagnostics);
+    let policy = policy::load(tree, &bootstrap, cancel, &mut policy_diagnostics);
     report.extend(policy_diagnostics);
     let Some(policy) = policy else {
+        report.source = opened.info();
         report.finish();
         return Ok(report);
     };
 
     // Phase: structural validation.
-    let shapes = load_shapes(&fs, &policy, &mut report);
+    let shapes = load_shapes(tree, &policy, &mut report);
     validate_structure(&mut parsed, &policy, &shapes, &mut report);
 
     // Phase: graph construction. Every parsed resource defines identifiers;
@@ -184,7 +288,7 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         .collect();
     let validity: Vec<bool> = parsed.iter().map(|entry| entry.valid).collect();
     let mut graph_diagnostics = Vec::new();
-    let graph = graph::build(&fs, &resources, &validity, &shapes, &mut graph_diagnostics);
+    let graph = graph::build(tree, &resources, &validity, &shapes, &mut graph_diagnostics);
     report.extend(graph_diagnostics);
     let valid_indexes: Vec<usize> = validity
         .iter()
@@ -220,7 +324,21 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         let planned = plan(&views, &policy, &mut report);
         if report.errors() == 0 {
             let mut diagnostics = Vec::new();
-            let outcome = generate::run(&fs, &bootstrap, planned, mode, VERSION, &mut diagnostics);
+            let delivery = match (mode, &opened) {
+                (Mode::Check, _) => generate::Delivery::Check,
+                (Mode::Write, Opened::Working(working)) => {
+                    generate::Delivery::Write(working.writer())
+                }
+                (Mode::Write, Opened::Git(..)) => unreachable!("rejected before the tree opened"),
+            };
+            let outcome = generate::run(
+                tree,
+                &bootstrap,
+                planned,
+                delivery,
+                VERSION,
+                &mut diagnostics,
+            );
             report.extend(diagnostics);
             report.outputs = outcome.outputs;
             report.max_fuel = outcome.max_fuel;
@@ -230,14 +348,15 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
 
     report.max_ticks = policy.max_ticks.get();
     report.max_heap_bytes = policy.max_heap_bytes.get();
+    report.source = opened.info();
     report.finish();
     Ok(report)
 }
 
-fn discover(fs: &ProjectDir, bootstrap: &Bootstrap) -> Result<Vec<ProjectPath>, String> {
+fn discover(tree: &dyn ReadTree, bootstrap: &Bootstrap) -> Result<Vec<ProjectPath>, String> {
     let mut files = Vec::new();
     for root in &bootstrap.resource_roots {
-        let found = fs
+        let found = tree
             .walk(root)
             .map_err(|error| format!("cannot walk resource root `{root}`: {error}"))?;
         files.extend(
@@ -259,14 +378,14 @@ fn discover(fs: &ProjectDir, bootstrap: &Bootstrap) -> Result<Vec<ProjectPath>, 
 }
 
 fn parse_all(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
     bootstrap: &Bootstrap,
     files: &[ProjectPath],
     report: &mut Report,
 ) -> Vec<Parsed> {
     let mut parsed = Vec::new();
     for path in files {
-        match fs.file_len(path) {
+        match tree.file_len(path) {
             Ok(len) if len > bootstrap.limits.resource_bytes => {
                 report.push(Diagnostic::new(
                     C::Unreadable,
@@ -288,7 +407,7 @@ fn parse_all(
                 continue;
             }
         }
-        let bytes = match fs.read(path) {
+        let bytes = match tree.read(path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 report.push(Diagnostic::new(
@@ -315,13 +434,40 @@ fn parse_all(
     parsed
 }
 
-fn load_shapes(fs: &ProjectDir, policy: &Policy, report: &mut Report) -> BTreeMap<String, Shape> {
+/// Read and parse every registered shape. Like rule modules, shapes are
+/// never reached through a symbolic link.
+fn load_shapes(
+    tree: &dyn ReadTree,
+    policy: &Policy,
+    report: &mut Report,
+) -> BTreeMap<String, Shape> {
     let mut shapes = BTreeMap::new();
     for (id, schema) in &policy.schemas {
         let Some(path) = &schema.shape else {
             continue;
         };
-        let text = match fs.read_text(path) {
+        match tree.symlink_component(path) {
+            Ok(None) => {}
+            Ok(Some(link)) => {
+                report.push(Diagnostic::new(
+                    C::Unreadable,
+                    path.as_str(),
+                    format!(
+                        "cannot read shape for `{id}`: `{link}` is a symbolic link; shapes must not be reached through links"
+                    ),
+                ));
+                continue;
+            }
+            Err(error) => {
+                report.push(Diagnostic::new(
+                    C::Unreadable,
+                    path.as_str(),
+                    format!("cannot read shape for `{id}`: cannot inspect shape path: {error}"),
+                ));
+                continue;
+            }
+        }
+        let text = match tree.read_text(path) {
             Ok(text) => text,
             Err(error) => {
                 report.push(Diagnostic::new(

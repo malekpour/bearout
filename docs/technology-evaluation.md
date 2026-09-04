@@ -63,6 +63,36 @@ Nickel and CUE inform the internal model. They are not to become a
 speculative public backend or plugin framework; Bearout does not need a
 pluggable rule engine until a real consumer demonstrates the need.
 
+## Git access: the `git` subprocess
+
+The index and revision sources read Git through the `git` executable,
+invoked with an argument vector: `rev-parse` to locate the repository and
+resolve names, `ls-files --stage` and `ls-tree -r -t -l` to capture
+entries, `diff-index --cached` with and without `--ita-invisible-in-index`
+to identify intent-to-add entries, and a long-lived `cat-file --batch` to
+load blobs by identity, all against one private copy of the index.
+Nothing is interpolated into a shell, the environment cannot redirect the
+repository, its objects, or its configuration, replacement objects and
+lazy fetching are disabled, listings and blobs are bounded, and Git's
+error output is reduced to one sanitized line.
+
+Alternatives considered:
+
+- **gitoxide** (`gix`) would remove the runtime dependency on `git`, but at
+  the cost of a large dependency tree, a still-moving API, and the burden
+  of tracking index extensions (split and sparse indexes, untracked cache,
+  file-system monitor data), linked worktrees, object-format transitions,
+  and revision syntax ourselves. Every one of those is exactly what the
+  installed Git already handles.
+- **libgit2** (`git2`) adds a C build dependency, has no SHA-256
+  repository support, and lags Git in index and worktree features.
+
+A repository that is checked through Git already has Git; requiring it for
+the Git-backed sources costs nothing there, keeps the binary small, and
+makes Git itself the authority on what the index and a revision contain.
+The Git-backed sources are documented as experimental so the choice can be
+revisited when real integrations produce evidence.
+
 ## Other components
 
 - `toml_edit` parses the bootstrap, front matter, header-only resources,

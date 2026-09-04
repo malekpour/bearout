@@ -24,9 +24,9 @@ use starlark::values::list::ListRef;
 use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 
 use crate::bootstrap::{Bootstrap, Limits};
-use crate::fs::ProjectDir;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
+use crate::tree::ReadTree;
 use loader::{Loader, Modules};
 use values::{Finding, Output, Registry};
 
@@ -124,7 +124,7 @@ fn entry_globals() -> Globals {
 /// Load the entry module and everything it loads. Returns the policy when
 /// the entry evaluated; diagnostics are appended either way.
 pub fn load(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
     bootstrap: &Bootstrap,
     cancel: Arc<AtomicBool>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -132,7 +132,7 @@ pub fn load(
     let library = library_globals();
     let entry_globals = entry_globals();
     let loader = Loader {
-        fs,
+        tree,
         rules_root: &bootstrap.rules_root,
         library: &library,
         limits: bootstrap.limits,

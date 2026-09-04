@@ -8,11 +8,11 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::envelope::Resource;
-use crate::fs::ProjectDir;
 use crate::identity;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
 use crate::shape::Shape;
+use crate::tree::ReadTree;
 
 /// The untyped relation every resource carries.
 pub const REFS_FIELD: &str = "refs";
@@ -44,7 +44,7 @@ pub struct Graph {
 /// reported a second time. Relations and links are only checked for
 /// resources marked `valid`.
 pub fn build(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
     resources: &[Resource],
     valid: &[bool],
     shapes: &BTreeMap<String, Shape>,
@@ -100,7 +100,7 @@ pub fn build(
         list.dedup();
     }
 
-    check_links(fs, resources, valid, diagnostics);
+    check_links(tree, resources, valid, diagnostics);
     Graph {
         nodes,
         relations,
@@ -178,7 +178,7 @@ fn relations_of(resource: &Resource, shape: Option<&Shape>) -> BTreeMap<String, 
 /// fragment identifier against the target's heading anchors. Targets with a
 /// URL scheme are not checked. A query string is ignored for resolution.
 fn check_links(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
     resources: &[Resource],
     valid: &[bool],
     diagnostics: &mut Vec<Diagnostic>,
@@ -229,7 +229,7 @@ fn check_links(
                 };
                 match by_path.get(joined.as_str()) {
                     Some(index) => Some(&resources[*index]),
-                    None if fs.is_file(&joined) => None,
+                    None if tree.is_file(&joined) => None,
                     None => {
                         diagnostics.push(report(format!(
                             "link `{}` points at a missing file",

@@ -12,6 +12,9 @@ nothing about law.
 The Rust kernel owns everything that must be the same for every adopting
 repository:
 
+- project sources: the live working directory through a filesystem
+  capability, or a frozen Git index or revision, read through one
+  read-only tree interface;
 - discovery of resources beneath the declared roots, sorted, without
   following symbolic links;
 - parsing of the resource envelope: TOML front matter through `toml_edit`
@@ -44,8 +47,8 @@ in policy.
 
 Every run proceeds through these phases in order:
 
-1. **bootstrap**: open the project as a capability, parse `bearout.toml`,
-   validate the roots;
+1. **bootstrap**: open the selected source as a read-only tree, parse
+   `bearout.toml` from it, validate the roots;
 2. **discovery**: walk the resource roots;
 3. **parsing**: envelope, body structure, fragments;
 4. **policy load**: the Starlark entry module and everything it loads,
@@ -74,11 +77,114 @@ root, and the output roots. Roots are disjoint, none is the project root,
 and the bootstrap itself lies beneath none of them. Repository policy can
 register schemas, checks, and generators but cannot widen any grant.
 
-All filesystem access goes through a `cap-std` directory capability opened
-on the project root; the kernel holds no ambient path. Output delivery
-refuses absolute paths, parent traversal, paths outside the output roots,
-symbolic links anywhere in the output path, and files that Bearout does not
-own according to the state manifest.
+All working-directory access goes through a `cap-std` directory capability
+opened on the project root; the kernel holds no ambient path. Output
+delivery refuses absolute paths, parent traversal, paths outside the output
+roots, symbolic links anywhere in the output path, and files that Bearout
+does not own according to the state manifest.
+
+## Project sources
+
+Every phase before delivery reads the project through one internal
+read-only interface, the read tree: bytes and UTF-8 text of a file, file
+length, file, directory, and generic existence (following links), the
+first symbolic link on a path (not following), deterministic recursive
+walking that never follows links or enters submodules and fails on a name
+that is not a portable project path, and a subtree view rooted at a
+directory. The interface carries no write or delete operation. Writes go
+through a separate delivery capability that only the working directory
+provides, so checking and generation planning depend on reads alone,
+`generate --check` runs against any source, and writing generation
+requires the working directory by construction.
+
+The source is selected before anything is read. The Git-backed sources are
+experimental and require the `git` executable.
+
+**Working directory.** The live filesystem through the `cap-std`
+capability, with its existing concurrency semantics: Bearout makes no
+snapshot, and a concurrent edit is visible to a run. It is the only source
+that can hand out the delivery capability.
+
+**Git index.** The index of the repository that owns the project root,
+captured once when the run starts as a frozen set of paths, modes, and
+object identities: the tree a commit would record. The index file is
+copied into a private temporary file first, and every listing of the
+capture (`ls-files --stage` and both `diff-index --cached` views) reads
+that copy, so the entries and the intent-to-add classification describe
+one authoritative state even if the live index changes during the run;
+the copy is removed afterwards. Staged additions and modifications are
+present; unstaged modifications, untracked files, and staged deletions are
+absent; a staged rename appears only at its destination; modes are those
+of the index. An unmerged entry fails the capture rather than silently
+choosing a stage. An intent-to-add entry, which `git commit` would not
+record, is excluded; it is identified as an entry that Git's
+`--ita-invisible-in-index` view treats as absent, which holds even after
+the working-tree file is removed. `GIT_INDEX_FILE` is honoured only when
+it names a regular file, not a symbolic link, whose canonical path lies
+directly inside the repository's applicable Git directory (the worktree's
+own for a linked worktree), so a partial-commit hook sees the index being
+committed and a stale, foreign, or redirected value is ignored. The index
+is never written and nothing is checked out.
+
+**Revision.** Any commit-ish or tree-ish Git resolves. The name is resolved
+exactly once; the resolved tree identity is retained, reported, and used
+for the rest of the run even if a branch or tag moves. A name that does not
+resolve, or that names a blob, is a fatal outcome. A revision expression is
+passed to Git after `--end-of-options` and may not begin with `-`.
+
+Both Git sources share one tree model. Repository and project roots are
+distinct: the owning repository is discovered from the project root, the
+project's prefix within it is determined once, and only paths beneath that
+prefix are exposed, so a project below the repository root and a linked
+worktree (where `.git` is a file) work alike. Each captured entry retains
+its kind (regular file, executable file, symbolic link, directory explicit
+or inferred, submodule gitlink), its object identity as an opaque
+hexadecimal string of whatever length the repository's hash algorithm
+produces, and its size where Git reported one. Blob content is loaded on
+demand by object identity through a long-lived `cat-file --batch` process,
+cached for the run only, and read exactly as stored: no working-tree
+filters, line-ending conversion, or smudge transformations. Listings and
+blobs are bounded in size, and a read error on either is a fatal outcome,
+never an empty result. Git is run as a fixed executable with an argument
+vector and a fixed environment: every variable that redirects the
+repository, its objects, or its configuration (`GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE` except as above,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+`GIT_NAMESPACE`, `GIT_REPLACE_REF_BASE`, the `GIT_CONFIG*` family), that
+changes discovery (`GIT_CEILING_DIRECTORIES`,
+`GIT_DISCOVERY_ACROSS_FILESYSTEM`), that alters pathspecs, or that traces
+to arbitrary files is dropped, so discovery always starts from the project
+root; replacement objects (`GIT_NO_REPLACE_OBJECTS`) and lazy fetching
+from a promisor remote (`GIT_NO_LAZY_FETCH`) are disabled, opportunistic
+index writes and prompts are off, and messages use the C locale. Git's
+error output is reduced to one bounded, control-character-free line before
+it reaches a report.
+
+Every capture carries a deterministic digest: BLAKE3 over one line per
+file, link, and gitlink beneath the project (`<mode> <object> <path>`, in
+path order; directories excluded, since the index infers them and a tree
+lists them), plus one line per directory holding a non-portable name.
+Identical content digests equally whether it came from the index or from
+a revision, which is what a later candidate/baseline comparison needs. It
+is not a Git object identity.
+
+A symbolic link inside a Git tree resolves lexically against the link's
+directory and only inside the tree it is read from: an absolute target, a
+target that leaves the project or the templates subtree, a chain of more
+than forty hops, a missing target, and traversal through a gitlink are all
+refused, and the working filesystem is never consulted. Discovery skips
+link entries, rule modules and shapes refuse to be reached through links in
+every source, and a submodule is never entered: it exists as an entry, is
+not a directory, and nothing beneath it is readable.
+
+The JSON report carries a `source` field for the Git sources only
+(`{"kind": "index", "digest": ...}` or `{"kind": "revision", "revision":
+..., "tree": ..., "digest": ...}`), so that a report can be tied to the
+exact content it examined. The field is experimental. Repository policy is
+unaware of the source: views are identical across sources, and no history,
+diff, or immutability information is exposed. The tree interface is designed so that a later
+phase can hold two independent trees, a candidate and a baseline, in one
+run without another filesystem rewrite; that comparison is not implemented.
 
 ## Schema and resource identity
 
@@ -144,11 +250,16 @@ outputs new and some old with the previous manifest still in place; the
 next `bearout generate --check` reports exactly that as stale outputs, and
 a normal run repairs it because every such file is still owned.
 
-Reads of rules and shapes refuse paths that pass through a symbolic link.
-Templates are read through the templates root capability and may be
-symbolic links inside the project; the capability confines where they can
-point. Links whose target carries a URL scheme, including single-letter
-schemes such as `c:`, are not resolved against the tree.
+Reads of rules and shapes refuse paths that pass through a symbolic link,
+in every source. Templates are read through a subtree rooted at the
+templates root and may be symbolic links; the subtree confines where they
+can point, whether it is a `cap-std` capability on the working directory
+or a view of a Git tree. Links whose target carries a URL scheme, including
+single-letter schemes such as `c:`, are not resolved against the tree.
+
+Against a Git-backed source, `bearout generate --check` reads the state
+manifest and the existing outputs from that tree, so it verifies what is
+staged or committed rather than what is on disk.
 
 `bearout generate --check` reports missing, stale, orphaned, and re-owned
 outputs and a stale state manifest. A normal run removes an orphan only when

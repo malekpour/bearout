@@ -202,6 +202,26 @@ impl fmt::Display for Diagnostic {
     }
 }
 
+/// Which Git-backed source a report describes. **Experimental**: present
+/// only for the index and revision sources, so that a report can be tied
+/// to the exact content it examined; absent for the working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceInfo {
+    /// `index` or `revision`.
+    pub kind: String,
+    /// The revision name as given, for the revision source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// The resolved tree object identity, for the revision source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<String>,
+    /// A deterministic BLAKE3 digest of the captured entries beneath the
+    /// project (kind, object identity, and path of every file, link, and
+    /// gitlink), the same for identical content from either source. Not a
+    /// Git object identity.
+    pub digest: String,
+}
+
 /// Result of checking or generating one project. Serialized as the JSON
 /// report for every outcome, including fatal failures.
 #[derive(Debug, Default, Serialize)]
@@ -210,6 +230,9 @@ pub struct Report {
     pub ok: bool,
     /// Number of discovered resources.
     pub resources: usize,
+    /// The Git-backed source examined, when one was selected. Experimental.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceInfo>,
     /// Findings in stable order.
     pub diagnostics: Vec<Diagnostic>,
     /// Generated outputs, as project-relative paths, only when generation

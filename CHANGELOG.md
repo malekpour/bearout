@@ -7,7 +7,41 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- Experimental Git-backed sources. `bearout check` and
+  `bearout generate --check` accept `--index`, which reads the Git index as
+  captured at the start of the run (what a commit would record: staged
+  additions and modifications present; unstaged edits, untracked files,
+  staged deletions, and intent-to-add entries absent; an unmerged index
+  fatal), or `--revision <rev>`, which reads one commit, tag, branch, or
+  tree, resolved exactly once. Every input of the run, from the bootstrap
+  to the generated outputs that check mode verifies, comes from the
+  selected tree; a working-directory file never satisfies a lookup in a
+  Git-backed run. Projects below the repository root and linked worktrees
+  are supported; symbolic links resolve only inside the tree; submodules
+  are never entered. Requires the `git` executable. In the library, the
+  source is `Options::source` (`Source::WorkingDirectory`, the default,
+  `Source::Index`, or `Source::Revision`), and a Git-backed report records
+  the source in `Report::source`, serialized as an experimental `source`
+  object in JSON with a deterministic `digest` of the captured entries.
+  Git runs with a fixed environment: repository, object, and
+  configuration redirection variables are dropped, replacement objects and
+  lazy fetching are disabled, the index is captured from one private copy,
+  and `GIT_INDEX_FILE` is honoured only for a regular file directly inside
+  the repository's own Git directory.
+
+### Changed
+
+- The kernel reads every source through one read-only tree interface;
+  writes go through a separate working-directory delivery capability, so
+  `generate --check` needs no write access and writing generation against
+  a Git-backed source is a fatal outcome (exit 2).
+- Shape files are no longer read through a symbolic link (B001), which
+  `docs/design.md` already documented for rules and shapes; rule modules
+  behaved this way before.
+- `Options` gained the `source` field; code constructing it by struct
+  literal should use `..Options::default()`.
 
 ## 0.1.0 - 2026-09-03
 

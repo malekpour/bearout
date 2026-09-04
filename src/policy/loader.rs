@@ -22,9 +22,9 @@ use starlark::typing::{AstModuleTypecheck, Interface};
 use super::Printer;
 use super::limits::apply_limits;
 use crate::bootstrap::Limits;
-use crate::fs::ProjectDir;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
+use crate::tree::ReadTree;
 
 /// The Starlark dialect Bearout evaluates: starlark-rust's extended dialect,
 /// which adds type annotations and f-strings to the standard language.
@@ -39,7 +39,7 @@ pub struct Modules {
 
 /// Everything a module evaluation needs from the host.
 pub struct Loader<'h> {
-    pub fs: &'h ProjectDir,
+    pub tree: &'h dyn ReadTree,
     pub rules_root: &'h ProjectPath,
     /// Globals for loaded modules.
     pub library: &'h Globals,
@@ -137,7 +137,7 @@ impl Loader<'_> {
             Diagnostic::new(Code::ScriptLoad, path.as_str(), format!("{message}{via}"))
         };
 
-        match self.fs.symlink_component(path) {
+        match self.tree.symlink_component(path) {
             Ok(None) => {}
             Ok(Some(link)) => {
                 diagnostics.push(report(format!(
@@ -150,7 +150,7 @@ impl Loader<'_> {
                 return Err(());
             }
         }
-        let text = match self.fs.read_text(path) {
+        let text = match self.tree.read_text(path) {
             Ok(text) => text,
             Err(error) => {
                 diagnostics.push(report(format!("cannot read module: {error}")));

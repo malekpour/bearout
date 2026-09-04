@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bearout::{Command, Mode, Options, Report};
-use clap::{Parser, Subcommand, ValueEnum};
+use bearout::{Command, Mode, Options, Report, Source};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(name = "bearout", version, about)]
@@ -25,6 +25,30 @@ enum Format {
     Json,
 }
 
+/// Where to read the project from. Without a selection, the working
+/// directory is read. The Git-backed sources are experimental, read-only,
+/// and require the `git` executable.
+#[derive(Debug, Args)]
+struct SourceArgs {
+    /// Read the Git index (staged content) instead of the working directory.
+    #[arg(long, conflicts_with = "revision")]
+    index: bool,
+    /// Read one Git revision (a commit, tag, branch, or tree) instead of the
+    /// working directory. The name is resolved once, at the start.
+    #[arg(long, value_name = "REV")]
+    revision: Option<String>,
+}
+
+impl SourceArgs {
+    fn source(self) -> Source {
+        match (self.index, self.revision) {
+            (true, _) => Source::Index,
+            (false, Some(revision)) => Source::Revision(revision),
+            (false, None) => Source::WorkingDirectory,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Subcommands {
     /// Validate a Bearout project and its resource graph.
@@ -32,30 +56,43 @@ enum Subcommands {
         /// Project directory containing bearout.toml.
         #[arg(default_value = ".")]
         path: PathBuf,
+        #[command(flatten)]
+        source: SourceArgs,
     },
     /// Validate a project, then render its generators' outputs.
     Generate {
         /// Project directory containing bearout.toml.
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Verify committed outputs instead of writing them.
+        /// Verify committed outputs instead of writing them. Required with
+        /// --index or --revision, which are read-only.
         #[arg(long)]
         check: bool,
+        #[command(flatten)]
+        source: SourceArgs,
     },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let (path, command, verb) = match cli.command {
-        Subcommands::Check { path } => (path, Command::Check, "checked"),
-        Subcommands::Generate { path, check: false } => {
-            (path, Command::Generate(Mode::Write), "generated")
-        }
-        Subcommands::Generate { path, check: true } => {
-            (path, Command::Generate(Mode::Check), "verified")
-        }
+    let (path, command, verb, source) = match cli.command {
+        Subcommands::Check { path, source } => (path, Command::Check, "checked", source),
+        Subcommands::Generate {
+            path,
+            check: false,
+            source,
+        } => (path, Command::Generate(Mode::Write), "generated", source),
+        Subcommands::Generate {
+            path,
+            check: true,
+            source,
+        } => (path, Command::Generate(Mode::Check), "verified", source),
     };
-    let report = bearout::run(&path, command, &Options::default());
+    let options = Options {
+        source: source.source(),
+        ..Options::default()
+    };
+    let report = bearout::run(&path, command, &options);
 
     match cli.format {
         Format::Json => match serde_json::to_string_pretty(&report) {

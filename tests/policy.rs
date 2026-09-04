@@ -248,6 +248,7 @@ fn evaluation_can_be_cancelled() {
         Command::Check,
         &Options {
             cancel: Some(Arc::clone(&cancel)),
+            ..Options::default()
         },
     );
     assert!(
@@ -261,6 +262,7 @@ fn evaluation_can_be_cancelled() {
         Command::Check,
         &Options {
             cancel: Some(cancel),
+            ..Options::default()
         },
     ));
 }

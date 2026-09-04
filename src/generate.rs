@@ -32,16 +32,16 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 
-use cap_std::fs::Dir;
 use minijinja::{Environment, UndefinedBehavior};
 use serde_json::{Value, json};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::bootstrap::{Bootstrap, Limits, STATE_NAME};
-use crate::fs::ProjectDir;
+use crate::fs::Writer;
 use crate::identity;
 use crate::paths::ProjectPath;
 use crate::report::{Code, Diagnostic};
+use crate::tree::ReadTree;
 
 /// Whether generation writes files or only verifies them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +50,16 @@ pub enum Mode {
     Write,
     /// Report differences; write nothing.
     Check,
+}
+
+/// What generation may do to the tree. Check mode needs only the read
+/// tree; write mode needs the working-directory delivery capability, which
+/// is why a Git-backed source can never be written to.
+pub(crate) enum Delivery<'a> {
+    /// Compare rendered artifacts with the tree and report differences.
+    Check,
+    /// Deliver changed outputs, remove owned orphans, write the manifest.
+    Write(Writer<'a>),
 }
 
 /// A validated plan entry with its provenance.
@@ -107,17 +117,17 @@ fn digest(bytes: &[u8]) -> String {
 
 /// Validate, render, compare, and deliver.
 pub(crate) fn run(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
     bootstrap: &Bootstrap,
     entries: Vec<Planned>,
-    mode: Mode,
+    delivery: Delivery<'_>,
     version: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Outcome {
     let before = diagnostics.len();
     let mut outcome = Outcome::default();
 
-    let previous = match read_state(fs, bootstrap) {
+    let previous = match read_state(tree, bootstrap) {
         Ok(state) => state.unwrap_or_default(),
         Err(problems) => {
             diagnostics.extend(problems);
@@ -128,7 +138,7 @@ pub(crate) fn run(
     let artifacts = if entries.is_empty() {
         Vec::new()
     } else {
-        let Some(renderer) = Renderer::new(fs, bootstrap, diagnostics) else {
+        let Some(renderer) = Renderer::new(tree, bootstrap, diagnostics) else {
             return outcome;
         };
         render(
@@ -160,10 +170,11 @@ pub(crate) fn run(
         .collect();
     let state_text = state_text(&next, version);
 
-    match mode {
-        Mode::Check => check(fs, &artifacts, &previous, &next, &state_text, diagnostics),
-        Mode::Write => deliver(
-            fs,
+    match delivery {
+        Delivery::Check => check(tree, &artifacts, &previous, &next, &state_text, diagnostics),
+        Delivery::Write(writer) => deliver(
+            tree,
+            &writer,
             bootstrap,
             &artifacts,
             &previous,
@@ -235,7 +246,9 @@ fn beneath_output_root(bootstrap: &Bootstrap, path: &ProjectPath) -> bool {
 
 struct Renderer {
     env: Environment<'static>,
-    templates: Arc<Dir>,
+    /// The templates root as its own tree, so that a template symbolic link
+    /// can resolve only inside that root.
+    templates: Arc<dyn ReadTree>,
     limits: Limits,
 }
 
@@ -265,7 +278,7 @@ impl io::Write for BoundedWriter {
 
 impl Renderer {
     fn new(
-        fs: &ProjectDir,
+        tree: &dyn ReadTree,
         bootstrap: &Bootstrap,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<Self> {
@@ -277,8 +290,8 @@ impl Renderer {
             ));
             return None;
         };
-        let templates = match fs.subdir(root) {
-            Ok(dir) => Arc::new(dir),
+        let templates = match tree.subtree(root) {
+            Ok(templates) => templates,
             Err(error) => {
                 diagnostics.push(Diagnostic::new(
                     Code::PlanInvalid,
@@ -289,12 +302,12 @@ impl Renderer {
             }
         };
         let mut env = Environment::new();
-        let loader_dir = Arc::clone(&templates);
+        let loader_tree = Arc::clone(&templates);
         env.set_loader(move |name: &str| {
             let Ok(path) = ProjectPath::parse(name) else {
                 return Ok(None);
             };
-            match loader_dir.read_to_string(path.to_native()) {
+            match loader_tree.read_text(&path) {
                 Ok(text) => Ok(Some(text)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(minijinja::Error::new(
@@ -326,7 +339,7 @@ impl Renderer {
     }
 
     fn source(&self, template: &ProjectPath) -> Option<String> {
-        self.templates.read_to_string(template.to_native()).ok()
+        self.templates.read_text(template).ok()
     }
 
     /// Render into a bounded buffer. Returns the bytes and the fuel consumed.
@@ -471,13 +484,16 @@ fn render(
 
 /// Parse the state manifest strictly: absent (`Ok(None)`), valid
 /// (`Ok(Some)`), or invalid (`Err` with every problem found).
-fn read_state(fs: &ProjectDir, bootstrap: &Bootstrap) -> Result<Option<State>, Vec<Diagnostic>> {
+fn read_state(
+    tree: &dyn ReadTree,
+    bootstrap: &Bootstrap,
+) -> Result<Option<State>, Vec<Diagnostic>> {
     let path = ProjectPath::parse(STATE_NAME).expect("constant path");
-    if !fs.exists(&path) {
+    if !tree.exists(&path) {
         return Ok(None);
     }
     let problem = |message: String| vec![Diagnostic::new(Code::OutputState, STATE_NAME, message)];
-    let text = fs
+    let text = tree
         .read_text(&path)
         .map_err(|error| problem(format!("cannot read state manifest: {error}")))?;
     let doc: DocumentMut = text.parse().map_err(|error: toml_edit::TomlError| {
@@ -626,7 +642,7 @@ fn state_text(entries: &State, version: &str) -> String {
 }
 
 fn check(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
     artifacts: &[Artifact],
     previous: &State,
     next: &State,
@@ -635,7 +651,7 @@ fn check(
 ) {
     for artifact in artifacts {
         let path = artifact.planned.output.as_str();
-        match fs.read(&artifact.planned.output) {
+        match tree.read(&artifact.planned.output) {
             Ok(bytes) => {
                 if !previous.contains_key(path) {
                     diagnostics.push(Diagnostic::new(
@@ -686,7 +702,7 @@ fn check(
         ));
     }
     let state_path = ProjectPath::parse(STATE_NAME).expect("constant path");
-    match fs.read_text(&state_path) {
+    match tree.read_text(&state_path) {
         Ok(text) if text == state_text => {}
         Ok(_) => diagnostics.push(Diagnostic::new(
             Code::OutputState,
@@ -716,8 +732,10 @@ enum Step<'a> {
     Removed { path: ProjectPath, prior: Vec<u8> },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deliver(
-    fs: &ProjectDir,
+    tree: &dyn ReadTree,
+    writer: &Writer<'_>,
     bootstrap: &Bootstrap,
     artifacts: &[Artifact],
     previous: &State,
@@ -729,7 +747,7 @@ fn deliver(
     let mut writes: Vec<PendingWrite<'_>> = Vec::new();
     for artifact in artifacts {
         let path = &artifact.planned.output;
-        match fs.symlink_component(path) {
+        match tree.symlink_component(path) {
             Ok(None) => {}
             Ok(Some(link)) => {
                 diagnostics.push(Diagnostic::new(
@@ -748,7 +766,7 @@ fn deliver(
                 continue;
             }
         }
-        match fs.read(path) {
+        match tree.read(path) {
             Ok(existing) if !previous.contains_key(path.as_str()) => {
                 diagnostics.push(Diagnostic::new(
                     Code::Delivery,
@@ -788,7 +806,7 @@ fn deliver(
             ));
             continue;
         }
-        match fs.read(&project_path) {
+        match tree.read(&project_path) {
             Ok(bytes) if digest(&bytes) == entry.digest => removals.push((project_path, bytes)),
             Ok(_) => diagnostics.push(Diagnostic::new(
                 Code::OutputState,
@@ -806,7 +824,7 @@ fn deliver(
     let mut journal: Vec<Step<'_>> = Vec::new();
     let mut failure: Option<Diagnostic> = None;
     for (path, bytes, prior) in writes {
-        if let Err(error) = fs.write_atomic(path, bytes) {
+        if let Err(error) = writer.write_atomic(path, bytes) {
             failure = Some(Diagnostic::new(
                 Code::Delivery,
                 path.as_str(),
@@ -818,7 +836,7 @@ fn deliver(
     }
     if failure.is_none() {
         for (path, prior) in removals {
-            if let Err(error) = fs.remove_file(&path) {
+            if let Err(error) = writer.remove_file(&path) {
                 failure = Some(Diagnostic::new(
                     Code::Delivery,
                     path.as_str(),
@@ -831,7 +849,7 @@ fn deliver(
     }
     if failure.is_none() && (!next.is_empty() || !previous.is_empty()) {
         let state_path = ProjectPath::parse(STATE_NAME).expect("constant path");
-        if let Err(error) = fs.write_atomic(&state_path, state_text.as_bytes()) {
+        if let Err(error) = writer.write_atomic(&state_path, state_text.as_bytes()) {
             failure = Some(Diagnostic::new(
                 Code::Delivery,
                 STATE_NAME,
@@ -841,22 +859,22 @@ fn deliver(
     }
     if let Some(failure) = failure {
         diagnostics.push(failure);
-        restore(fs, &journal, diagnostics);
+        restore(writer, &journal, diagnostics);
     }
 }
 
 /// Undo journaled steps in reverse order after a failed delivery. The state
 /// manifest was not written, so the tree returns to the previous state where
 /// every restoration succeeds; each failure is reported.
-fn restore(fs: &ProjectDir, journal: &[Step<'_>], diagnostics: &mut Vec<Diagnostic>) {
+fn restore(writer: &Writer<'_>, journal: &[Step<'_>], diagnostics: &mut Vec<Diagnostic>) {
     for step in journal.iter().rev() {
         let (path, result) = match step {
             Step::Written {
                 path,
                 prior: Some(bytes),
-            } => (path.as_str(), fs.write_atomic(path, bytes)),
-            Step::Written { path, prior: None } => (path.as_str(), fs.remove_file(path)),
-            Step::Removed { path, prior } => (path.as_str(), fs.write_atomic(path, prior)),
+            } => (path.as_str(), writer.write_atomic(path, bytes)),
+            Step::Written { path, prior: None } => (path.as_str(), writer.remove_file(path)),
+            Step::Removed { path, prior } => (path.as_str(), writer.write_atomic(path, prior)),
         };
         if let Err(error) = result {
             diagnostics.push(Diagnostic::new(

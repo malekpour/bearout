@@ -172,15 +172,68 @@ generation succeeded. Third-party content is recorded in
 ## Commands
 
 ```sh
-bearout check [path]               # exit 0 clean, 1 findings, 2 fatal
-bearout generate [path]            # check, then deliver outputs
-bearout generate --check [path]    # check, then verify committed outputs
-bearout --format json check [path] # one JSON report for every outcome
+bearout check [path]                    # exit 0 clean, 1 findings, 2 fatal
+bearout generate [path]                 # check, then deliver outputs
+bearout generate --check [path]         # check, then verify committed outputs
+bearout --format json check [path]      # one JSON report for every outcome
+bearout check --index [path]            # check what a commit would record
+bearout check --revision v1.2 [path]    # check one commit, tag, branch, or tree
+bearout generate --check --index [path] # verify outputs as staged
 ```
 
 Diagnostics use stable codes and forward-slash project-relative paths on
 every platform; the catalog and its stability policy are in
 [`docs/diagnostics.md`](docs/diagnostics.md).
+
+## Sources
+
+> [!WARNING]
+> The Git-backed sources are experimental and require the `git`
+> executable on `PATH`. Their flags, semantics, and report fields may
+> change.
+
+Without a selection, Bearout reads the live working directory through its
+filesystem capability, as before; it makes no snapshot, so concurrent edits
+are visible to a run. Two read-only sources read a Git tree instead, and
+every input of the run comes from that tree and nothing else: the
+bootstrap, the entry module and everything it loads, shapes, resources,
+templates, `bearout-state.toml`, the generated outputs that
+`generate --check` verifies, and the files that links resolve against. A
+file that exists only in the working directory never satisfies a lookup in
+a Git-backed run.
+
+- `--index` reads the Git index of the repository that owns the project,
+  from one private copy taken when the run starts: the tree a commit would
+  record. Staged additions and modifications are present; unstaged
+  modifications, untracked files, staged deletions, and intent-to-add
+  entries are absent; a staged rename appears only at its destination. An
+  unmerged index is a fatal outcome. In a partial-commit hook, Git's
+  `GIT_INDEX_FILE` is honoured when it is a regular file directly inside
+  the repository's own Git directory.
+- `--revision <rev>` reads one commit, tag, branch, or tree object. The
+  name is resolved exactly once, at the start; the resolved tree identity
+  is recorded in the JSON report's `source` field and used for the whole
+  run even if the branch moves meanwhile. An unknown name is a fatal
+  outcome.
+
+Either way the JSON report's `source` carries a deterministic `digest` of
+the captured entries, equal for identical content from either source, so
+a report can be tied to exactly what it examined. Git runs with a fixed
+environment: variables that redirect the repository, its objects, or its
+configuration are dropped, replacement objects and lazy fetching are
+disabled, and nothing is fetched or written.
+
+The project may sit below the repository root, including in a linked
+worktree; only paths beneath the project are exposed, and a symbolic link
+in a Git tree resolves only inside the tree it is read from. Submodules are
+never entered. Blobs are read exactly as Git stores them, without
+line-ending conversion or filters, and nothing is checked out.
+
+Both sources are read-only: `check` and `generate --check` accept them,
+`generate` without `--check` refuses them with exit code 2. Git support does
+not make Bearout a security sandbox, and this phase exposes no history,
+diffs, or immutability rules to repository policy; scripts do not learn
+which source a run reads.
 
 ## Samples
 

@@ -20,13 +20,27 @@ Codes are experimental until the first tagged release. After that:
 | --- | --- |
 | 0 | The run completed and produced no error-severity finding. |
 | 1 | The run completed and produced at least one error-severity finding. |
-| 2 | Invocation, configuration, or engine failure: the report's `fatal` field explains. |
+| 2 | Invocation, configuration, source, or engine failure: the report's `fatal` field explains. |
+
+Source failures are fatal: a Git-backed source that cannot be opened (no
+repository, no `git` executable, an unmerged index), a revision that does
+not resolve, and writing generation requested against the index or a
+revision. Conflicting source flags are an invocation error. A Git-backed
+run reports its diagnostics with the same codes, paths, and ordering as a
+working-directory run; only the tree the paths refer to differs.
 
 `--format json` prints one JSON report for every outcome, including fatal
 ones. Its `outputs` list is non-empty only when generation succeeded: in
 write mode the outputs delivered or already current, in check mode the
 outputs verified as current. A failed rendering, state validation, check,
-or delivery leaves it empty, and `check` runs never fill it.
+or delivery leaves it empty, and `check` runs never fill it. For the Git
+sources, a completed run also carries an experimental `source` object with
+`kind` (`index` or `revision`), for a revision the `revision` name as
+given and the resolved `tree` identity, and for both a deterministic
+`digest` of the captured entries beneath the project (`blake3:` followed
+by 64 hexadecimal characters; equal for identical content from either
+source; not a Git object identity). The field is absent for the working
+directory and for fatal outcomes.
 
 ## Catalog
 

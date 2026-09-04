@@ -7,7 +7,9 @@ bump the version and are recorded in the changelog.
 Bearout evaluates repository policy in Starlark using starlark-rust's
 extended dialect (type annotations and f-strings on top of the Starlark
 specification). Scripts receive immutable views and return host values.
-They have no filesystem, environment, network, clock, or random access.
+They have no filesystem, environment, network, clock, or random access,
+and they do not learn which source (working directory, Git index, or
+revision) a run reads: the views are the same for every source.
 
 ## Entry module
 

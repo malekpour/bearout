@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The filesystem capability. Every read and write goes through a
-//! `cap_std::fs::Dir` opened on the project root, so the kernel cannot reach
-//! outside the project even if a path computation is wrong. Symlinks are
-//! never followed during discovery and never written through.
+//! The working-directory capability. Every read of the working directory
+//! goes through a `cap_std::fs::Dir` opened on the project root, so the
+//! kernel cannot reach outside the project even if a path computation is
+//! wrong. Symlinks are never followed during discovery and never written
+//! through.
+//!
+//! [`WorkingDir`] is the live filesystem: it may change while a run reads
+//! it, and Bearout makes no snapshot. It is also the only source that can
+//! hand out a [`Writer`], the delivery capability through which generation
+//! changes the tree.
 //!
 //! Writes go through `cap-tempfile`: a uniquely named sibling temporary file
 //! opened exclusively (`create_new`, so an existing symlink at that name is
@@ -13,6 +19,7 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use std::io::Write;
 
@@ -21,70 +28,31 @@ use cap_std::fs::Dir;
 use cap_tempfile::TempFile;
 
 use crate::paths::ProjectPath;
+use crate::tree::ReadTree;
 
-/// The project root as a capability.
-pub struct ProjectDir {
+/// The project root of the working directory as a capability.
+pub struct WorkingDir {
     dir: Dir,
 }
 
-impl ProjectDir {
-    /// Open the project root. This is the only place ambient authority is used.
+/// The delivery capability: the only handle through which Bearout writes or
+/// removes a file. It exists only for the working directory.
+pub struct Writer<'a> {
+    dir: &'a Dir,
+}
+
+impl WorkingDir {
+    /// Open the project root. This is the only place ambient authority is
+    /// used for the working directory.
     pub fn open(root: &Path) -> io::Result<Self> {
         let dir = Dir::open_ambient_dir(root, ambient_authority())?;
         Ok(Self { dir })
     }
 
-    pub fn read(&self, path: &ProjectPath) -> io::Result<Vec<u8>> {
-        self.dir.read(path.to_native())
-    }
-
-    pub fn read_text(&self, path: &ProjectPath) -> io::Result<String> {
-        let bytes = self.read(path)?;
-        String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    }
-
+    /// The capability to change this working directory.
     #[must_use]
-    pub fn is_file(&self, path: &ProjectPath) -> bool {
-        self.dir.is_file(path.to_native())
-    }
-
-    #[must_use]
-    pub fn is_dir(&self, path: &ProjectPath) -> bool {
-        path.as_str().is_empty() || self.dir.is_dir(path.to_native())
-    }
-
-    #[must_use]
-    pub fn exists(&self, path: &ProjectPath) -> bool {
-        self.dir.exists(path.to_native())
-    }
-
-    /// The size of a file in bytes.
-    pub fn file_len(&self, path: &ProjectPath) -> io::Result<u64> {
-        Ok(self.dir.metadata(path.to_native())?.len())
-    }
-
-    /// The first component of `path`, from the root downward, that is a
-    /// symbolic link, if any.
-    pub fn symlink_component(&self, path: &ProjectPath) -> io::Result<Option<ProjectPath>> {
-        for ancestor in path.ancestors() {
-            match self.dir.symlink_metadata(ancestor.to_native()) {
-                Ok(metadata) if metadata.is_symlink() => return Ok(Some(ancestor)),
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(None)
-    }
-
-    /// Every regular file beneath `directory`, sorted, without following
-    /// symbolic links. An entry whose name is not valid UTF-8 or not a valid
-    /// project path segment is an error, never silently skipped.
-    pub fn walk(&self, directory: &ProjectPath) -> io::Result<Vec<ProjectPath>> {
-        let mut found = Vec::new();
-        self.walk_into(directory, &mut found)?;
-        found.sort();
-        Ok(found)
+    pub fn writer(&self) -> Writer<'_> {
+        Writer { dir: &self.dir }
     }
 
     fn walk_into(&self, directory: &ProjectPath, found: &mut Vec<ProjectPath>) -> io::Result<()> {
@@ -124,7 +92,59 @@ impl ProjectDir {
         }
         Ok(())
     }
+}
 
+impl ReadTree for WorkingDir {
+    fn read(&self, path: &ProjectPath) -> io::Result<Vec<u8>> {
+        self.dir.read(path.to_native())
+    }
+
+    fn file_len(&self, path: &ProjectPath) -> io::Result<u64> {
+        Ok(self.dir.metadata(path.to_native())?.len())
+    }
+
+    fn is_file(&self, path: &ProjectPath) -> bool {
+        self.dir.is_file(path.to_native())
+    }
+
+    fn is_dir(&self, path: &ProjectPath) -> bool {
+        path.as_str().is_empty() || self.dir.is_dir(path.to_native())
+    }
+
+    fn exists(&self, path: &ProjectPath) -> bool {
+        self.dir.exists(path.to_native())
+    }
+
+    fn symlink_component(&self, path: &ProjectPath) -> io::Result<Option<ProjectPath>> {
+        for ancestor in path.ancestors() {
+            match self.dir.symlink_metadata(ancestor.to_native()) {
+                Ok(metadata) if metadata.is_symlink() => return Ok(Some(ancestor)),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    fn walk(&self, directory: &ProjectPath) -> io::Result<Vec<ProjectPath>> {
+        let mut found = Vec::new();
+        self.walk_into(directory, &mut found)?;
+        found.sort();
+        Ok(found)
+    }
+
+    fn subtree(&self, directory: &ProjectPath) -> io::Result<Arc<dyn ReadTree>> {
+        let dir = if directory.as_str().is_empty() {
+            self.dir.try_clone()?
+        } else {
+            self.dir.open_dir(directory.to_native())?
+        };
+        Ok(Arc::new(Self { dir }))
+    }
+}
+
+impl Writer<'_> {
     /// Write `bytes` to `path` atomically: an exclusively created, uniquely
     /// named temporary file in the same directory receives every byte
     /// through its open handle and is then renamed over `path`. Readers see
@@ -149,10 +169,5 @@ impl ProjectDir {
 
     pub fn remove_file(&self, path: &ProjectPath) -> io::Result<()> {
         self.dir.remove_file(path.to_native())
-    }
-
-    /// A capability on a directory beneath the root.
-    pub fn subdir(&self, path: &ProjectPath) -> io::Result<Dir> {
-        self.dir.open_dir(path.to_native())
     }
 }
