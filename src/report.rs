@@ -56,6 +56,19 @@ pub enum Code {
     /// A schema-less document could not be read, is not valid UTF-8, or
     /// exceeds the document size limit.
     DocumentUnreadable,
+    /// An `.editorconfig` of the selected tree is unusable, or a property
+    /// it sets for a selected file has a value Bearout cannot enforce.
+    HygieneConfig,
+    /// A selected file could not be read or exceeds the file size limit.
+    FileUnreadable,
+    /// A selected text file is not valid UTF-8 or contradicts its charset.
+    Encoding,
+    /// A line terminator contradicts `end_of_line`.
+    LineEnding,
+    /// The end of the file contradicts `insert_final_newline`.
+    FinalNewline,
+    /// A line ends with whitespace that `trim_trailing_whitespace` forbids.
+    TrailingWhitespace,
 }
 
 impl Code {
@@ -85,6 +98,12 @@ impl Code {
             Self::OutputState => "B020",
             Self::Delivery => "B021",
             Self::DocumentUnreadable => "B022",
+            Self::HygieneConfig => "B023",
+            Self::FileUnreadable => "B024",
+            Self::Encoding => "B025",
+            Self::LineEnding => "B026",
+            Self::FinalNewline => "B027",
+            Self::TrailingWhitespace => "B028",
         }
     }
 
@@ -98,7 +117,7 @@ impl Code {
     }
 
     /// Every code, in catalog order.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 28] = [
         Self::Unreadable,
         Self::Envelope,
         Self::SchemaIdentity,
@@ -121,6 +140,12 @@ impl Code {
         Self::OutputState,
         Self::Delivery,
         Self::DocumentUnreadable,
+        Self::HygieneConfig,
+        Self::FileUnreadable,
+        Self::Encoding,
+        Self::LineEnding,
+        Self::FinalNewline,
+        Self::TrailingWhitespace,
     ];
 }
 

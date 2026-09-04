@@ -84,6 +84,12 @@ directory and for fatal outcomes.
 | B020 | error | A generated output is missing, stale, unowned, orphaned, or changed ownership, or the state manifest is out of date or invalid. |
 | B021 | error | Delivering a generated output failed (with restoration attempted and reported), or delivery was refused to protect a file Bearout does not own. |
 | B022 | error | A schema-less document selected by `[documents]` could not be read, is not valid UTF-8, or exceeds `limits.document_bytes`. |
+| B023 | error | Hygiene configuration: an `.editorconfig` of the selected tree cannot be read or parsed (reported once, on that file), or a property it sets for a selected file has a value Bearout cannot enforce (reported on the selected file). Files governed by an unusable `.editorconfig` are not checked. |
+| B024 | error | A file selected by `[hygiene]` could not be read or exceeds `limits.file_bytes`. |
+| B025 | error | A selected text file is not valid UTF-8, begins with a byte-order mark that `charset = utf-8` forbids, or lacks the mark that `charset = utf-8-bom` requires. Nothing else is checked in that file. |
+| B026 | error | A line terminator contradicts `end_of_line`. One per file, naming the first line. |
+| B027 | error | A non-empty file does not end with exactly one newline under `insert_final_newline = true`, or ends with one under `false`. |
+| B028 | error | A line ends with spaces or tabs under `trim_trailing_whitespace = true`. One per file, naming the first line. |
 
 ## Repository rule identifiers
 

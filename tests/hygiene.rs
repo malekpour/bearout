@@ -278,3 +278,194 @@ fn repeated_selection_is_identical() {
     let second = serde_json::to_string(&project.check()).unwrap();
     assert_eq!(first, second);
 }
+
+// ---- native text hygiene --------------------------------------------------
+
+use common::{assert_line, assert_no_line, codes, lines};
+
+const STRICT: &str = "root = true\n\n[*]\ncharset = utf-8\nend_of_line = lf\ninsert_final_newline = true\ntrim_trailing_whitespace = true\n\n[*.md]\ntrim_trailing_whitespace = false\n";
+
+/// A declared-scope project over `text/` with a strict `.editorconfig`.
+fn text_project() -> Project {
+    let project = Project::with_note();
+    project.file(
+        "bearout.toml",
+        &hygiene_bootstrap("scope = \"declared\"\nroots = [\"text\"]"),
+    );
+    project.file(".editorconfig", STRICT);
+    project.file("text/clean.txt", "one\ntwo\n");
+    project
+}
+
+#[test]
+fn line_endings_final_newlines_and_trailing_whitespace_are_reported_once_per_file() {
+    let project = text_project();
+    project.file("text/crlf.txt", "a\r\nb\r\n");
+    project.file("text/cr.txt", "a\rb\r");
+    project.file("text/missing.txt", "no newline");
+    project.file("text/extra.txt", "a\n\n\n");
+    project.file("text/trailing.txt", "a  \nb\t\nc\n");
+    project.file("text/hard-breaks.md", "line one  \nline two\n");
+    project.file("text/empty.txt", "");
+    let report = project.check();
+    assert_eq!(
+        lines(&report),
+        [
+            "text/cr.txt:1:B026: line ends with cr; `end_of_line = lf` requires lf (and 1 more line)",
+            "text/crlf.txt:1:B026: line ends with crlf; `end_of_line = lf` requires lf (and 1 more line)",
+            "text/extra.txt:1:B027: file ends with 2 blank line(s); `insert_final_newline = true` requires exactly one final newline",
+            "text/missing.txt:1:B027: file does not end with a newline; `insert_final_newline = true` requires exactly one",
+            "text/trailing.txt:1:B028: line ends with whitespace; `trim_trailing_whitespace = true` forbids it (and 1 more line)",
+        ]
+    );
+    assert_eq!(report.files, 8);
+    assert_eq!(lines(&project.check()), lines(&report));
+}
+
+#[test]
+fn encoding_rules_come_from_charset_and_binary_files_are_skipped() {
+    let project = text_project();
+    project.bytes("text/latin1.txt", b"caf\xe9\n");
+    project.bytes("text/bom.txt", b"\xEF\xBB\xBFa\n");
+    project.bytes("text/image.bin", b"\x00\x01  \r\n");
+    project.file("text/bom-required.dat", "plain\n");
+    project.file("text/.editorconfig", "[*.dat]\ncharset = utf-8-bom\n");
+    let report = project.check();
+    assert_eq!(
+        lines(&report),
+        [
+            "text/bom-required.dat:B025: file has no byte-order mark; `charset = utf-8-bom` requires one",
+            "text/bom.txt:B025: file begins with a byte-order mark; `charset = utf-8` forbids one",
+            "text/latin1.txt:1:B025: file is not valid UTF-8: invalid utf-8 sequence of 1 bytes from index 3",
+        ]
+    );
+    // The bootstrap overrides content sniffing both ways.
+    project.file(
+        "bearout.toml",
+        &hygiene_bootstrap(
+            "scope = \"declared\"\nroots = [\"text\"]\nbinary = [\"text/latin1.txt\"]\ntext = [\"text/image.bin\"]",
+        ),
+    );
+    let report = project.check();
+    assert_no_line(&report, "latin1");
+    assert_line(&report, "text/image.bin:1:B026: line ends with crlf");
+    assert_line(&report, "text/image.bin:1:B028");
+}
+
+#[test]
+fn editorconfig_precedence_root_unset_and_unsupported_values() {
+    let project = text_project();
+    project.file(
+        "text/nested/.editorconfig",
+        "[*.txt]\ninsert_final_newline = unset\n",
+    );
+    project.file("text/nested/loose.txt", "no newline");
+    project.file(
+        "text/isolated/.editorconfig",
+        "root = true\r\n\r\n[*]\r\nend_of_line = crlf\r\n",
+    );
+    project.file("text/isolated/win.txt", "a\r\nb\r\n  ");
+    project.file(
+        "text/odd/.editorconfig",
+        "[*.txt]\ncharset = latin1\n\n[*.cfg]\nend_of_line = native\n",
+    );
+    project.file("text/odd/legacy.txt", "x\n");
+    project.file("text/odd/tool.cfg", "x\n");
+    project.file("text/odd/fine.md", "x\n");
+    let report = project.check();
+    assert_eq!(
+        lines(&report),
+        [
+            "text/odd/legacy.txt:B023: `charset = latin1` is not a value Bearout can enforce; remove the property, set it to `unset`, or exclude the file from the selection",
+            "text/odd/tool.cfg:B023: `end_of_line = native` is not a value Bearout can enforce; remove the property, set it to `unset`, or exclude the file from the selection",
+        ]
+    );
+    // `unset` removed the outer requirement; `root = true` hid the outer
+    // file entirely, so trailing whitespace went unchecked there.
+    assert_no_line(&report, "loose.txt");
+    assert_no_line(&report, "win.txt");
+    // Pattern precedence: a later, more specific section wins.
+    project.file(
+        "text/.editorconfig",
+        "[*]\ntrim_trailing_whitespace = true\n\n[*.md]\ntrim_trailing_whitespace = false\n\n[keep-*.md]\ntrim_trailing_whitespace = true\n",
+    );
+    project.file("text/keep-tidy.md", "a  \n");
+    project.file("text/loose.md", "a  \n");
+    let report = project.check();
+    assert_line(&report, "text/keep-tidy.md:1:B028");
+    assert_no_line(&report, "text/loose.md");
+}
+
+#[test]
+fn an_unusable_editorconfig_is_reported_once_and_stops_checks_beneath_it() {
+    let project = text_project();
+    project.file(
+        "text/broken/.editorconfig",
+        "[*\ngarbage line without equals\n",
+    );
+    project.file("text/broken/a.txt", "no newline");
+    project.file("text/broken/b.txt", "trailing  \n");
+    let report = project.check();
+    assert_eq!(
+        lines(&report),
+        [
+            "text/broken/.editorconfig:B023: `.editorconfig` has a line that is neither a section header, a property, nor a comment"
+        ]
+    );
+}
+
+#[test]
+fn size_limits_stop_a_file_without_cascading() {
+    let project = text_project();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[limits]\nfile_bytes = 10\n",
+            hygiene_bootstrap("scope = \"declared\"\nroots = [\"text\"]")
+        ),
+    );
+    project.file("text/big.txt", "much too long  \r\n");
+    let report = project.check();
+    assert_eq!(
+        lines(&report),
+        ["text/big.txt:B024: file is 17 bytes, above `limits.file_bytes` = 10"]
+    );
+    assert!(
+        codes(&report)
+            .iter()
+            .all(|code| *code == bearout::Code::FileUnreadable)
+    );
+}
+
+#[test]
+fn the_selected_trees_editorconfig_governs_git_backed_checks() {
+    let project = text_project();
+    project.git_init();
+    project.commit_all("strict");
+    // Relax the rules on disk only; the index still says strict.
+    project.file(".editorconfig", "root = true\n\n[*]\ncharset = utf-8\n");
+    project.file("text/trailing.txt", "a  \n");
+    project.git(&["add", "text/trailing.txt"]);
+    assert_clean(&project.check());
+    let index = project.check_from(Source::Index);
+    assert_eq!(
+        lines(&index),
+        [
+            "text/trailing.txt:1:B028: line ends with whitespace; `trim_trailing_whitespace = true` forbids it"
+        ]
+    );
+    // Stage the relaxed rules: the index is now clean while HEAD is strict
+    // and lacks the file entirely.
+    project.git(&["add", ".editorconfig"]);
+    assert_clean(&project.check_from(Source::Index));
+    assert_clean(&project.check_from(Source::Revision("HEAD".to_owned())));
+    // An unstaged repair cannot hide a staged violation.
+    project.git(&["checkout", "-q", "HEAD", "--", ".editorconfig"]);
+    project.git(&["add", ".editorconfig"]);
+    project.file("text/trailing.txt", "a\n");
+    assert_clean(&project.check());
+    assert_line(
+        &project.check_from(Source::Index),
+        "text/trailing.txt:1:B028",
+    );
+}

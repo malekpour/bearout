@@ -290,9 +290,14 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     report.resources = gathered.files.len();
     report.documents = gathered.document_paths.len();
 
-    // Phase: hygiene selection, for the candidate only.
+    // Phase: hygiene, for the candidate only: select, read once, check the
+    // bytes against the tree's own `.editorconfig` files.
     let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
     report.files = selected.len();
+    let mut hygiene_diagnostics = Vec::new();
+    let loaded = hygiene::load(tree, selected, &bootstrap.limits, &mut hygiene_diagnostics);
+    hygiene::check_text(tree, &loaded, &mut hygiene_diagnostics);
+    report.extend(hygiene_diagnostics);
 
     // Repository policy is loaded before structural validation because the
     // entry module registers the schemas and shapes that validation needs.
