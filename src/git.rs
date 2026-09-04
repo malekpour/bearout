@@ -526,8 +526,9 @@ impl Drop for IndexSnapshot {
 }
 
 /// The first meaningful line of a Git error stream, without the `fatal:`
-/// or `error:` prefix, control characters, or excess length.
-fn sanitize(stderr: &[u8]) -> String {
+/// or `error:` prefix, control characters, or excess length. Also used for
+/// the error streams of external formatters.
+pub fn sanitize(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let line = text
         .lines()

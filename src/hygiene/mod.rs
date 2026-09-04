@@ -16,10 +16,11 @@
 //! history and is neither checked nor formatted.
 
 pub mod editorconfig;
+pub mod external;
 pub mod selection;
 pub mod text;
 
-use crate::bootstrap::Limits;
+use crate::bootstrap::{Bootstrap, Limits};
 use crate::report::{Code, Diagnostic};
 use crate::tree::ReadTree;
 
@@ -77,6 +78,71 @@ pub fn load(
         }
     }
     loaded
+}
+
+/// Verify every loaded file that has a formatter against that formatter's
+/// output. Formatters run only when the host authorized them; declaring
+/// formatters without authorization is fatal, as is a formatter that cannot
+/// start or a support file the selected tree lacks. Each difference is
+/// B029 and each failed run is B030, in path order.
+pub fn check_formatters(
+    tree: &dyn ReadTree,
+    loaded: &[Loaded],
+    bootstrap: &Bootstrap,
+    authorized: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<(), String> {
+    let assigned: Vec<&Loaded> = loaded
+        .iter()
+        .filter(|file| file.selected.formatter.is_some())
+        .collect();
+    if assigned.is_empty() {
+        return Ok(());
+    }
+    if !authorized {
+        return Err(format!(
+            "bearout.toml declares formatters ({}), which run as trusted host programs; pass --allow-formatters (library: `Options::allow_formatters`) to run them",
+            bootstrap
+                .formatters
+                .iter()
+                .map(|formatter| format!("`{}`", formatter.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let mut workdirs: Vec<Option<external::Workdir>> = Vec::new();
+    workdirs.resize_with(bootstrap.formatters.len(), || None);
+    for file in assigned {
+        let index = file.selected.formatter.expect("assigned");
+        let formatter = &bootstrap.formatters[index];
+        if workdirs[index].is_none() {
+            workdirs[index] = Some(external::Workdir::prepare(tree, formatter)?);
+        }
+        let workdir = workdirs[index].as_ref().expect("prepared");
+        match external::run(formatter, workdir, &file.selected.path, &file.bytes) {
+            Ok(output) if output == file.bytes => {}
+            Ok(_) => diagnostics.push(Diagnostic::new(
+                Code::FormatDifference,
+                file.selected.path.as_str(),
+                format!(
+                    "file differs from the output of formatter `{}`; run `bearout format`",
+                    formatter.name
+                ),
+            )),
+            Err(external::Failure::Start(detail)) => {
+                return Err(format!(
+                    "formatter `{}` cannot start: {detail}",
+                    formatter.name
+                ));
+            }
+            Err(failure) => diagnostics.push(Diagnostic::new(
+                Code::FormatterFailed,
+                file.selected.path.as_str(),
+                format!("formatter `{}` {failure}", formatter.name),
+            )),
+        }
+    }
+    Ok(())
 }
 
 /// Native text hygiene over every loaded file, with properties resolved

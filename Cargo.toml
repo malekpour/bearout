@@ -26,6 +26,13 @@ include = [
 ]
 publish = ["crates-io"]
 
+[[bin]]
+doc = false
+name = "bearout-fixture-formatter"
+path = "src/bin/fixture-formatter.rs"
+required-features = ["fixture-formatter"]
+test = false
+
 [dependencies]
 allocative = "0.3.6"
 anyhow = "1.0.104"
@@ -45,6 +52,12 @@ toml_edit = "0.25.13"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[features]
+# Builds the deterministic formatter stand-in the test suite drives. It is
+# a test fixture, not a product: the pinned tasks and CI enable every
+# feature, while a plain build or install never carries it.
+fixture-formatter = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

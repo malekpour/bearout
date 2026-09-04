@@ -69,6 +69,10 @@ pub enum Code {
     FinalNewline,
     /// A line ends with whitespace that `trim_trailing_whitespace` forbids.
     TrailingWhitespace,
+    /// A selected file differs from its formatter's output.
+    FormatDifference,
+    /// A formatter run failed for a selected file.
+    FormatterFailed,
 }
 
 impl Code {
@@ -104,6 +108,8 @@ impl Code {
             Self::LineEnding => "B026",
             Self::FinalNewline => "B027",
             Self::TrailingWhitespace => "B028",
+            Self::FormatDifference => "B029",
+            Self::FormatterFailed => "B030",
         }
     }
 
@@ -117,7 +123,7 @@ impl Code {
     }
 
     /// Every code, in catalog order.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 30] = [
         Self::Unreadable,
         Self::Envelope,
         Self::SchemaIdentity,
@@ -146,6 +152,8 @@ impl Code {
         Self::LineEnding,
         Self::FinalNewline,
         Self::TrailingWhitespace,
+        Self::FormatDifference,
+        Self::FormatterFailed,
     ];
 }
 

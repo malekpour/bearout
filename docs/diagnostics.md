@@ -90,6 +90,8 @@ directory and for fatal outcomes.
 | B026 | error | A line terminator contradicts `end_of_line`. One per file, naming the first line. |
 | B027 | error | A non-empty file does not end with exactly one newline under `insert_final_newline = true`, or ends with one under `false`. |
 | B028 | error | A line ends with spaces or tabs under `trim_trailing_whitespace = true`. One per file, naming the first line. |
+| B029 | error | A selected file differs from the output of the formatter assigned to it; `bearout format` rewrites it. |
+| B030 | error | The formatter assigned to a selected file exited with a non-zero status, timed out, produced more output than the bound allows, or ended abnormally. A formatter that cannot start at all is fatal. |
 
 ## Repository rule identifiers
 

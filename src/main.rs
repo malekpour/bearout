@@ -13,6 +13,11 @@ struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
     format: Format,
 
+    /// Run the formatters bearout.toml declares. They are trusted host
+    /// programs chosen by the repository, not confined by Bearout.
+    #[arg(long, global = true)]
+    allow_formatters: bool,
+
     #[command(subcommand)]
     command: Subcommands,
 }
@@ -95,6 +100,7 @@ fn main() -> ExitCode {
     let options = Options {
         source: source.source(),
         baseline: source.baseline,
+        allow_formatters: cli.allow_formatters,
         ..Options::default()
     };
     let report = bearout::run(&path, command, &options);

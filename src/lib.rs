@@ -119,6 +119,11 @@ pub struct Options {
     /// or default branch. The baseline is read-only historical evidence;
     /// only the candidate's policy runs. **Experimental.**
     pub baseline: Option<String>,
+    /// Authorize the formatters `bearout.toml` declares to run. They are
+    /// trusted host programs outside Starlark's capability model; without
+    /// this, a bootstrap that declares formatters is a fatal outcome.
+    /// **Experimental.**
+    pub allow_formatters: bool,
 }
 
 /// Run Bearout on the project rooted at `root`, reading it from
@@ -297,6 +302,13 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     let mut hygiene_diagnostics = Vec::new();
     let loaded = hygiene::load(tree, selected, &bootstrap.limits, &mut hygiene_diagnostics);
     hygiene::check_text(tree, &loaded, &mut hygiene_diagnostics);
+    hygiene::check_formatters(
+        tree,
+        &loaded,
+        &bootstrap,
+        options.allow_formatters,
+        &mut hygiene_diagnostics,
+    )?;
     report.extend(hygiene_diagnostics);
 
     // Repository policy is loaded before structural validation because the

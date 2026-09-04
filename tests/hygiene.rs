@@ -469,3 +469,261 @@ fn the_selected_trees_editorconfig_governs_git_backed_checks() {
         "text/trailing.txt:1:B028",
     );
 }
+
+// ---- external formatters --------------------------------------------------
+
+use bearout::Mode;
+
+/// The deterministic formatter stand-in, a feature-gated binary of this
+/// crate. Run the tests with `--all-features`, as the pinned tasks do.
+fn fixture_formatter() -> String {
+    env!("CARGO_BIN_EXE_bearout-fixture-formatter").replace('\\', "/")
+}
+
+fn formatter_bootstrap(command_tail: &str, extra: &str) -> String {
+    format!(
+        "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{}\"{}]\nextensions = [\"txt\"]\n{extra}\n",
+        common::BOOTSTRAP,
+        fixture_formatter(),
+        command_tail
+    )
+}
+
+fn allowed(source: Source) -> Options {
+    Options {
+        source,
+        allow_formatters: true,
+        ..Options::default()
+    }
+}
+
+fn formatter_project(command_tail: &str, extra: &str) -> Project {
+    let project = Project::with_note();
+    project.file("bearout.toml", &formatter_bootstrap(command_tail, extra));
+    project.file("src/a.txt", "ALREADY\n");
+    project.file("src/b.txt", "lower\n");
+    project.file("src/ignored.md", "not assigned\n");
+    project
+}
+
+#[test]
+fn formatters_need_explicit_authorization() {
+    let project = formatter_project(", \"upper\"", "");
+    assert_fatal(
+        &project.check(),
+        "bearout.toml declares formatters (`fixture`), which run as trusted host programs; pass --allow-formatters",
+    );
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert!(report.fatal.is_none(), "{:?}", report.fatal);
+    // A selection without any assigned file needs no authorization.
+    project.remove("src/a.txt");
+    project.remove("src/b.txt");
+    assert_clean(&project.check());
+}
+
+#[test]
+fn unchanged_and_changed_output_are_told_apart_in_path_order() {
+    let project = formatter_project(", \"upper\"", "");
+    project.file("src/c.txt", "MIXED case\n");
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(
+        lines(&report),
+        [
+            "src/b.txt:B029: file differs from the output of formatter `fixture`; run `bearout format`",
+            "src/c.txt:B029: file differs from the output of formatter `fixture`; run `bearout format`",
+        ]
+    );
+    let again = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(lines(&again), lines(&report));
+    let echo = formatter_project(", \"echo\"", "");
+    assert_clean(&echo.run(Command::Check, &allowed(Source::WorkingDirectory)));
+}
+
+#[test]
+fn the_project_relative_path_is_substituted() {
+    let project = formatter_project(", \"name\", \"{path}\"", "");
+    project.file("src/a.txt", "name=src/a.txt\nbody\n");
+    project.file("src/b.txt", "name=src/other.txt\nbody\n");
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(
+        lines(&report),
+        [
+            "src/b.txt:B029: file differs from the output of formatter `fixture`; run `bearout format`"
+        ]
+    );
+}
+
+#[test]
+fn support_files_come_from_the_selected_tree() {
+    let project = formatter_project(", \"config\", \"tool.cfg\"", "support = [\"tool.cfg\"]");
+    project.file("tool.cfg", "committed config\n");
+    project.file("src/a.txt", "committed config\nbody\n");
+    project.file("src/b.txt", "committed config\nbody\n");
+    project.git_init();
+    project.commit_all("base");
+    assert_clean(&project.run(Command::Check, &allowed(Source::WorkingDirectory)));
+    // A different configuration on disk does not govern the index.
+    project.file("tool.cfg", "edited config\n");
+    let working = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(working.errors(), 2, "{:?}", lines(&working));
+    assert_clean(&project.run(Command::Check, &allowed(Source::Index)));
+    assert_clean(&project.run(
+        Command::Check,
+        &allowed(Source::Revision("HEAD".to_owned())),
+    ));
+    // A staged configuration governs the index even before it is on disk.
+    project.file("tool.cfg", "staged config\n");
+    project.git(&["add", "tool.cfg"]);
+    project.file("tool.cfg", "committed config\n");
+    assert_clean(&project.run(Command::Check, &allowed(Source::WorkingDirectory)));
+    assert_eq!(
+        project
+            .run(Command::Check, &allowed(Source::Index))
+            .errors(),
+        2
+    );
+    // A missing support file is fatal and names it.
+    project.file(
+        "bearout.toml",
+        &formatter_bootstrap(", \"config\", \"tool.cfg\"", "support = [\"absent.cfg\"]"),
+    );
+    assert_fatal(
+        &project.run(Command::Check, &allowed(Source::WorkingDirectory)),
+        "cannot read support file `absent.cfg` of formatter `fixture` from the selected tree",
+    );
+}
+
+#[test]
+fn failures_are_bounded_sanitized_and_fail_closed() {
+    let project = formatter_project(", \"fail\"", "");
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(
+        lines(&report),
+        [
+            "src/a.txt:B030: formatter `fixture` exited with status 3: formatter says no",
+            "src/b.txt:B030: formatter `fixture` exited with status 3: formatter says no",
+        ]
+    );
+
+    let missing = Project::with_note();
+    missing.file(
+        "bearout.toml",
+        &format!("{}\n[hygiene]\nscope = \"declared\"\nroots = [\"src\"]\n\n[[formatters]]\nname = \"gone\"\ncommand = [\"bearout-no-such-formatter-executable\"]\n", common::BOOTSTRAP),
+    );
+    missing.file("src/a.txt", "x\n");
+    assert_fatal(
+        &missing.run(Command::Check, &allowed(Source::WorkingDirectory)),
+        "formatter `gone` cannot start: `bearout-no-such-formatter-executable` is not installed or not on PATH",
+    );
+
+    let slow = formatter_project(", \"sleep\", \"5\"", "timeout = 1");
+    slow.remove("src/b.txt");
+    let started = std::time::Instant::now();
+    let report = slow.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "killed at the timeout"
+    );
+    assert_eq!(
+        lines(&report),
+        ["src/a.txt:B030: formatter `fixture` timed out after 1 s"]
+    );
+
+    let spew = formatter_project(", \"spew\", \"3000000\"", "");
+    spew.remove("src/b.txt");
+    let report = spew.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_line(
+        &report,
+        "src/a.txt:B030: formatter `fixture` produced more than",
+    );
+    assert_eq!(report.errors(), 1);
+
+    let noisy = formatter_project(", \"stderr\", \"200000\"", "");
+    noisy.remove("src/b.txt");
+    assert_clean(&noisy.run(Command::Check, &allowed(Source::WorkingDirectory)));
+
+    let crash = formatter_project(", \"crash\"", "");
+    crash.remove("src/b.txt");
+    let report = crash.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_eq!(report.errors(), 1);
+    assert!(
+        lines(&report)[0].starts_with("src/a.txt:B030: formatter `fixture` "),
+        "{:?}",
+        lines(&report)
+    );
+}
+
+#[test]
+fn formatters_run_confined_and_leave_the_repository_untouched() {
+    let project = formatter_project(", \"cache\"", "");
+    project.git_init();
+    project.commit_all("base");
+    assert_clean(&project.run(Command::Check, &allowed(Source::WorkingDirectory)));
+    assert_eq!(
+        project.git(&["status", "--porcelain"]),
+        "",
+        "no cache file in the repository"
+    );
+    assert!(!project.path().join(".fixture-cache").exists());
+    assert!(!project.path().join("src/.fixture-cache").exists());
+
+    let env = formatter_project(", \"env\"", "");
+    env.remove("src/b.txt");
+    env.file("src/a.txt", "NO_COLOR=1 TERM=dumb\n");
+    assert_clean(&env.run(Command::Check, &allowed(Source::WorkingDirectory)));
+}
+
+#[test]
+fn starlark_cannot_invoke_a_formatter() {
+    let project = formatter_project(", \"upper\"", "");
+    project.file(
+        common::ENTRY,
+        "def c(p):\n    return [warning(str(dir(p)), resource = \"note-a\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"c\", c)\n",
+    );
+    project.file("src/b.txt", "LOWER\n");
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert_clean(&report);
+    let rendered = lines(&report).join("\n");
+    assert!(!rendered.contains("format"), "{rendered}");
+    assert!(!rendered.contains("exec"), "{rendered}");
+    project.file(
+        common::ENTRY,
+        "def c(p):\n    return [warning(str(format), resource = \"note-a\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"c\", c)\n",
+    );
+    let report = project.run(Command::Check, &allowed(Source::WorkingDirectory));
+    assert!(codes(&report).iter().any(|code| matches!(
+        code,
+        bearout::Code::ScriptLoad | bearout::Code::ScriptFailure
+    )));
+}
+
+#[test]
+fn generate_check_and_write_include_formatter_verification() {
+    let project = formatter_project(", \"upper\"", "");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[outputs]\nroots = [\"generated\"]\n",
+            formatter_bootstrap(", \"upper\"", "")
+        ),
+    );
+    let report = project.run(
+        Command::Generate(Mode::Check),
+        &allowed(Source::WorkingDirectory),
+    );
+    assert_line(&report, "src/b.txt:B029");
+    assert!(
+        report.outputs.is_empty(),
+        "a hygiene error blocks generation"
+    );
+    let report = project.run(
+        Command::Generate(Mode::Write),
+        &allowed(Source::WorkingDirectory),
+    );
+    assert_line(&report, "src/b.txt:B029");
+    assert_eq!(
+        project.read("src/b.txt"),
+        "lower\n",
+        "generation never rewrites sources"
+    );
+}
