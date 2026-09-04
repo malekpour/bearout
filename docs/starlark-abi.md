@@ -24,6 +24,7 @@ once per Bearout run with these registration functions in scope:
 | `schema(id, shape=None, validate=None)` | Register a schema identifier. `shape` is a `.schema.toml` path relative to the rules root. `validate` is a function of one resource view. |
 | `check(name, function)` | Register a project-level check: a function of one project view. |
 | `generator(name, function)` | Register a generator: a function of one project view that returns outputs. |
+| `history_check(name, function)` | Register a history check: a function of one history view, run only by `bearout history` and history fixture cases. Experimental. |
 
 Registration functions exist only in the entry module. Loaded modules that
 call them fail at load time. Registering the same id or name twice fails.
@@ -46,8 +47,8 @@ Available in every module:
 
 | Constructor | Result |
 | --- | --- |
-| `error(message, resource=None, path=None, side="candidate", line=None, code=None)` | A finding that fails the run (B015). |
-| `warning(message, resource=None, path=None, side="candidate", line=None, code=None)` | A finding that does not fail the run (B016). |
+| `error(message, resource=None, path=None, side="candidate", line=None, code=None, commit=None)` | A finding that fails the run (B015; B032 from a history check). |
+| `warning(message, resource=None, path=None, side="candidate", line=None, code=None, commit=None)` | A finding that does not fail the run (B016; B033 from a history check, where any finding fails the run). |
 | `output(template, path, context=None)` | One planned file: `template` relative to the templates root, `path` relative to the project root, `context` a dict. |
 
 Rules enforced at construction, inside the script, so the error names the
@@ -60,6 +61,8 @@ call site:
   document; `resource` and `path` are mutually exclusive;
 - a finding's `side` is exactly `"candidate"` (the default) or
   `"baseline"`;
+- a finding's `commit` is a non-empty commit key and is exclusive with
+  `resource`, `path`, and the baseline side;
 - an output's `path` and `template` are normalized relative paths;
 - `context` converts to JSON; anything else is an error.
 
@@ -76,7 +79,12 @@ Rules enforced by the kernel when the value is admitted (B014 if violated):
 - a resource present on both sides is never targeted ambiguously: the
   side names which tree, and therefore which path, the finding is about;
 - a finding on the baseline side is reported with the structured
-  `baseline` side (a `baseline:` prefix in text output).
+  `baseline` side (a `baseline:` prefix in text output);
+- a history check's finding names a `commit` key present in the history
+  view (`pending` only for a pending-message check) with a `line` within
+  that commit's message, or names nothing and carries no line, for a
+  range-wide finding; it never names a resource, a path, or a side, and
+  an ordinary check or validator never names a commit.
 - an output path lies beneath a declared output root and does not collide
   with another output after normalization and case folding.
 
@@ -156,6 +164,37 @@ reported as B022 does not.
 | `anchors` | As in the resource view. |
 | `links` | As in the resource view. |
 | `images` | As in the resource view. |
+
+## History view
+
+The argument of a history check, for `bearout history` and history
+fixture cases. Experimental.
+
+| Key | Value |
+| --- | --- |
+| `kind` | `range` or `message`. |
+| `base`, `head` | `{revision, id}` as supplied and as resolved, or `None` (both `None` for a pending commit; `base` `None` without a base). |
+| `commits` | List of commit views, oldest first in Bearout's deterministic topological order. |
+
+Each commit view:
+
+| Key | Value |
+| --- | --- |
+| `key` | The full commit identity, or `pending`; the value `commit=` takes. |
+| `id`, `tree` | Full identities, or `None` for the pending commit. |
+| `pending` | `True` for the pending commit. |
+| `parents` | Ordered full parent identities: `HEAD` and any `MERGE_HEAD` for the pending commit; empty for a root commit or an unborn branch. |
+| `merge` | `True` when there is more than one parent. |
+| `author`, `committer` | `{name, email, timestamp, timezone}` exactly as the commit object records them, without `.mailmap`; `committer` is `None` for the pending commit. |
+| `message` | The exact UTF-8 message, line boundaries and trailing content kept; comments and autosquash prefixes are not removed. |
+| `subject` | The first line of `message`. |
+| `changes` | List of `{repository_path, project_path, change, before, after}` sorted by repository path: `change` is `added`, `removed`, `modified`, or `type-changed`; `before` and `after` are `{mode, object, kind}` or `None`; `kind` is `file`, `executable`, `symlink`, or `gitlink`; `project_path` is `None` outside the Bearout project. |
+| `change_basis` | The first parent the changes are relative to, or `None` for the empty tree. |
+
+Nothing interprets a message: headers, trailers, sign-offs,
+breaking-change markers, and autosquash prefixes are the policy's to
+read with ordinary string operations, and there is no regex facility.
+No trailer projection is exposed.
 
 Views are the same whichever source the run reads; nothing in them names
 the working directory, the index, or a revision.

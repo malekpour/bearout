@@ -530,6 +530,128 @@ unless `--allow-formatters` is given, and a case whose mutation declares
 them is an observable fatal outcome of that candidate, never a silent
 authorization.
 
+## Repository history and commit policy
+
+Everything here is experimental. The kernel establishes exact Git facts
+and runs repository-owned history checks over them; it contains no
+Conventional Commits parser, no allowed types, no DCO semantics, no merge
+exemptions, and no branch conventions.
+
+**Commands and modes.** `bearout history range` resolves the head
+(default `HEAD`) and an optional base exactly once to commits, through
+the hardened Git runner, and inspects the commits reachable from the head
+but not from the base, or everything reachable from the head without a
+base. The base itself is excluded, merges are included, an all-zero base
+is not special, and no environment variable names a revision. A
+hyphen-led, malformed, non-commit, missing, or ambiguous name is fatal.
+`bearout history message --file` describes the commit a `commit-msg`
+hook is about to make from one captured index.
+
+**Authority.** A range reads the bootstrap, the entry module, and every
+loaded module from the resolved head's tree; a pending commit reads them
+from the captured index, honouring a valid alternate `GIT_INDEX_FILE`
+under the source rules above. The working tree never supplies policy to
+either, and the facts come from the same repository as the policy.
+Projects below the repository root and linked worktrees work. The
+history command loads policy but runs none of the contract pipeline: no
+discovery, validation, documents, hygiene, ordinary checks, generators,
+formatters, or fixtures, so a hook check is never coupled to unrelated
+working-tree state. A missing or malformed bootstrap, a missing entry
+module, a policy that does not load, and a policy that registers no
+history check are all fatal.
+
+**The history reader.** Git runs with argument vectors and the fixed
+environment above: no shell, no prompts, no replacement objects, no lazy
+fetching, bounded output, sanitized errors, and children killed and
+reaped on every failure. Raw commit objects are read through one
+long-lived `cat-file --batch` process, each rejected from its announced
+size before a byte is loaded when it exceeds `limits.history_commit_bytes`
+or the remaining budget; continuation headers such as `gpgsig` and
+`mergetag` belong to the header above them and never reach the message.
+A commit with a non-UTF-8 header or message, a declared non-UTF-8
+encoding, a malformed identity, or a non-portable path is fatal and
+names the commit. Missing objects in a partial clone fail rather than
+fetch. A range whose set contains a shallow boundary commit is refused,
+because the history reachable from it is cut off; an explicit range
+above the boundary runs, since every commit and tree it needs is local.
+Rename detection is off regardless of configuration, and `.mailmap` is
+never applied.
+
+**Set and order.** The set is Git reachability; the order is Bearout's:
+oldest first, a commit becoming eligible once every parent inside the
+set is emitted, the smallest full object identity among the eligible
+going first. Changes within a commit sort by repository path.
+
+**Facts.** Each commit carries its key (the full identity, or `pending`),
+identity, tree, ordered parents, the derived `merge` flag, the raw author
+and committer identities (name, email, Unix timestamp, numeric offset,
+exactly as the object records them), the byte-exact message and its
+first line, and its changes relative to the first parent, or the empty
+tree for a root commit: repository-relative path, project-relative path
+when inside the project, `added`, `removed`, `modified`, or
+`type-changed`, and the mode, object identity, and kind (`file`,
+`executable`, `symlink`, `gitlink`) of each side. A rename is a removal
+plus an addition; identical object identities are observable facts, not
+a claim of intent. Merge, fixup, squash, amend, revert, and root commits
+are all present. The pending commit has key `pending`, no identity,
+tree, or committer, `HEAD` and any `MERGE_HEAD` as parents, the exact
+message file, the author Git would record, and the staged changes of the
+captured index against `HEAD` or the empty tree on an unborn branch.
+
+**Message file.** Exactly the named file is read: a regular file, not a
+link, whose canonical location lies inside the repository's resolved Git
+directory (a linked worktree's own directory in a worktree), no larger
+than `limits.history_commit_bytes` before it is opened, valid UTF-8, and
+free of NUL. Nothing is stripped: comments, scissors sections, autosquash
+prefixes, and blank lines are policy's to read. An empty message is an
+input to policy.
+
+**Policy and findings.** `history_check(name, function)` registers a
+check that runs only for the history command and history fixture cases,
+under the contained loader and every Starlark limit, with no filesystem,
+Git, environment, process, network, clock, or random access; the view is
+immutable and there is no regex facility. `error()` and `warning()` take
+`commit=`: a key present in the view (`pending` only for a pending
+check) with a `line` within that commit's message, or nothing for a
+range-wide finding, which then carries no line. A commit target is
+exclusive with a resource, a path, and the baseline side; ordinary checks
+and validators cannot target commits; history checks cannot name a
+resource or document. Accepted findings are B032 and B033 with the
+registered check name as the rule identity unless the finding carries
+its own code; loading, execution, output, and malformed-result problems
+keep B012, B013, B014, B017, and B018 against the script path. A commit
+identity is never encoded as a path.
+
+**Report and order.** The history report carries `ok`, the mode, the
+policy source (the resolved head as a revision, or the captured index),
+the supplied and resolved base and head, the commit count, the findings,
+and any fatal outcome; JSON is valid on every exit path. Findings sort by
+target, script paths first (by path), then range-wide, then commits in
+commit order; within a target by line, code, rule, and message; then
+deduplicated. Any finding, warnings included, exits 1; a fatal inability
+to establish the facts or load the policy exits 2 and is never a policy
+finding.
+
+**Limits.** `history_commits` (10,000) bounds the commits of a run, which
+covers a large release range while a pull request inspects tens;
+`history_changes` (100,000) bounds the changed paths across the run;
+`history_commit_bytes` (64 KiB) bounds one commit object, headers and
+message together, and the pending message file, well above signed
+commits with long bodies; `history_bytes` (64 MiB) bounds everything read
+for the facts, listings and commit objects included, every listing read
+within what remains. The view is bounded transitively by these; the
+facts are captured in full before policy runs.
+
+**Fixtures.** A fixture case may replace mutations with `[cases.history]`,
+a synthetic pending commit built by the same constructor and admitted by
+the same rules as the real command, checked by the registered history
+checks alone, with no Git call and no external program. It is exclusive
+with mutations and a comparison baseline, bounded by the fixture and
+history limits, and matched by the unchanged exact and contains
+semantics with `commit` as a structured expectation field. Range
+topology and changed-path policy stay covered by Bearout's own
+synthetic-repository tests; a declarative history DAG fixture is deferred.
+
 ## Schema and resource identity
 
 A schema identifier is `<namespace segments>/<kind>@<major>`, lowercase
@@ -645,4 +767,8 @@ the capability confines writes, but checking a repository from an untrusted
 author is not a supported security boundary. Contract fixtures do not
 change this: they run the same policy over virtual candidates, add no
 capability, and write nothing, but a fixture suite from an untrusted
-author is as trusted as its policy. See `SECURITY.md`.
+author is as trusted as its policy. History checks read facts from the
+repository through the hardened Git runner and write nothing; they do not
+verify signatures or the legal truth of a sign-off, and a policy that
+enforces commit rules is as trusted as the tree it is read from. See
+`SECURITY.md`.

@@ -216,6 +216,8 @@ bearout --allow-formatters check [path] # also run the declared formatters
 bearout --allow-formatters format [path] # rewrite selected files in place
 bearout test [path]                     # run the declared contract fixtures
 bearout test --index [path]             # the suite, policy, and payloads as staged
+bearout history range [path] --base REV # check the commits in REV..HEAD
+bearout history message [path] --file .git/COMMIT_EDITMSG  # the commit-msg hook
 ```
 
 Diagnostics use stable codes and forward-slash project-relative paths on
@@ -455,6 +457,113 @@ shell commands, generate random edits, or inspect the checker's text are
 outside the vocabulary and stay where they are. No compatibility with any
 existing test suite is claimed; the
 [`decision-records`](samples/decision-records/) sample shows the shape.
+
+## History and commit policy
+
+> [!WARNING]
+> History checks, the `history` command, the history view, and the
+> history report are experimental and require the `git` executable.
+
+`bearout history` lets a repository enforce its own commit rules over
+exact Git facts. The kernel captures commits, identities, messages,
+parents, and changed paths; the repository writes the rules in Starlark.
+Conventional Commits headers, allowed types and scopes, header length,
+body separation, breaking-change footers, sign-off trailers that must
+match the author, and merge or autosquash exemptions are all policy the
+repository supplies; Bearout holds no Conventional Commits parser and no
+DCO semantics, and it does not verify the legal truth of a sign-off.
+
+```python
+def commit_policy(history):
+    findings = []
+    for commit in history["commits"]:
+        if commit["merge"]:
+            continue                       # this repository's choice
+        author = commit["author"]
+        sign_off = "Signed-off-by: %s <%s>" % (author["name"], author["email"])
+        if sign_off not in commit["message"].split("\n"):
+            findings.append(error(
+                "missing `%s`" % sign_off,
+                commit = commit["key"],
+                code = "sign-off",
+            ))
+    return findings
+
+history_check("commit-policy", commit_policy)
+```
+
+`bearout history range [PATH] [--base REV] [--head REV]` checks the
+commits reachable from the head (default `HEAD`) but not from the base:
+Git's `base..head`, or everything reachable from the head without a
+base. Both names are resolved exactly once and recorded with their full
+identities; the base itself is excluded; merge commits are included and
+policy decides whether they matter. Nothing is read from `BASE`, `HEAD`,
+or any provider variable, and an all-zero base is not special: omit
+`--base` for a new branch. Commits are exposed oldest first in a
+deterministic topological order, the full object identity breaking ties
+among simultaneously eligible commits. Each commit's changes are
+relative to its first parent, or to the empty tree for a root commit,
+without rename detection: a rename is a removal plus an addition whose
+object identities policy may compare. Paths are repository-relative
+facts, with a project-relative form when the path lies inside the
+Bearout project.
+
+`bearout history message [PATH] --file FILE` is the commit-msg hook path.
+It reads exactly the named message file, which must be a regular,
+non-linked file inside the repository's resolved Git directory (the
+linked worktree's own directory in a worktree), bounded before it is
+read, valid UTF-8, and free of NUL; comments, scissors lines, autosquash
+prefixes, and blank lines reach policy exactly as Git supplied them. The
+author is the identity Git would record, the parents are `HEAD` and any
+merge in progress, and the staged changes come from the same captured
+index that supplies the policy. An empty message is an input to policy.
+
+Authority is explicit: a range reads `bearout.toml`, the entry module,
+and every loaded module from the resolved head's tree; a pending commit
+reads them from the captured index. An unstaged policy edit cannot
+change a commit-msg check, and the working tree cannot override a range
+check. Only history checks run: no resource discovery, documents,
+hygiene, ordinary checks, generators, formatters, or fixtures. Identities
+are the commit object's own, without `.mailmap`, case folding, or any
+inference that author and committer are one person; messages are
+byte-exact. Signed commits parse with their signature headers kept out
+of the message. Missing objects are never fetched, and a range that
+reaches a shallow boundary is refused rather than described as complete
+history.
+
+A history finding targets a commit key from the view (`pending` for the
+pending commit) with an optional message line, or nothing for a
+range-wide finding; a commit target never combines with a resource,
+path, or comparison side, and ordinary checks cannot target commits.
+Accepted findings are B032 (error) and B033 (warning) in a distinct
+history report, rendered as `commit <id>:<line>:B032[rule]: ...`,
+`commit pending:...`, or `range:...`, with the registered check name as
+the rule identity unless the finding carries its own `code`. Script
+diagnostics sort first by path, then range-wide findings, then commit
+findings in commit order; within a target by line, code, rule, and
+message. Exit 0 with no finding, 1 with any finding, warnings included,
+2 for invocation, Git, policy-loading, malformed-history, or limit
+failures. An invalid revision or incomplete history is never a policy
+finding.
+
+`limits.history_commits`, `limits.history_changes`,
+`limits.history_commit_bytes`, and `limits.history_bytes` bound a run.
+Fixture cases may supply a synthetic pending message with
+`[cases.history]` and expect findings by `commit`, so Conventional
+Commit and sign-off policies are regression-tested without a Git
+repository; the [`commit-policy`](samples/commit-policy/) sample shows a
+complete policy with its fixtures.
+
+A commit checker written in a scripting language, which runs `git log`
+or `git show`, parses the text, and prints failures, maps onto this
+model: the parsing becomes the history view, each rule becomes a branch
+of the history check reading `subject`, `message`, `author`, `parents`,
+and `changes`, each failure becomes `error(..., commit = key)`, and the
+CI job becomes `bearout history range --base <base>` while the hook
+becomes `bearout history message --file "$1"`. Rules that depend on
+branch names, remote state, signature verification, or provider APIs
+have no facts to read and stay where they are. No compatibility with any
+existing checker is claimed.
 
 ## Samples
 

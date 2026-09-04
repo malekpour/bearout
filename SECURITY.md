@@ -19,7 +19,13 @@ limits:
 - contract fixtures (`bearout test`) check virtual candidates through a
   read-only overlay that writes nothing, exposes nothing to policy, and
   runs declared formatters only under the same explicit authorization as
-  `check`, with the suite bounded by its own limits.
+  `check`, with the suite bounded by its own limits;
+- history checks (`bearout history`) read commit facts through the same
+  hardened Git runner, from a policy pinned to the resolved head or the
+  captured index, never fetch, write nothing, read no provider variable,
+  and are bounded by their own limits. They do not verify signatures or
+  the legal truth of a sign-off, and a commit policy is as trusted as the
+  tree it is read from.
 
 These measures bound accidents and runaway policy code. They are not a
 sandbox: checking a repository written by a hostile author is not a

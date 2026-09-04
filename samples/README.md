@@ -16,6 +16,7 @@ Read them in this order.
 | Sample | Classification | Models | Capabilities |
 | --- | --- | --- | --- |
 | [`linked-notes`](linked-notes/) | synthetic | Three linked notes | Bootstrap, one validator, typed reference, link and anchor resolution, header-only TOML resource |
+| [`commit-policy`](commit-policy/) | synthetic | A repository's commit-message rules | A history check over Git commit facts, Conventional Commits and sign-off matching as sample policy, merge and autosquash treatment, pending-message fixture cases |
 | [`decision-records`](decision-records/) | synthetic | A decision log with citable rulings | Fragments, shared helpers via `load()`, project checks, a generator with provenance, policy-defined immutability against a baseline, contract fixtures run by `bearout test` |
 | [`esperanto-reference`](esperanto-reference/) | sourced snapshot | A small Esperanto grammar reference | Unicode headings and anchors, sourced facts, repository-defined sorting, Markdown and JSON outputs |
 | [`formula-language`](formula-language/) | synthetic | Formulo, a spreadsheet-expression language | Grammar as a graph, a generated Rust lexer, parser, AST, and conformance tests that compile and pass |

@@ -23,7 +23,8 @@ const README_SECTIONS: [&str; 8] = [
     "## Engine gaps",
 ];
 
-const EXPECTED: [&str; 9] = [
+const EXPECTED: [&str; 10] = [
+    "commit-policy",
     "decision-records",
     "document-assembly",
     "document-references",
@@ -97,7 +98,7 @@ fn samples_with_fixtures_pass_their_suites() {
         );
         with_fixtures.push(name);
     }
-    assert_eq!(with_fixtures, ["decision-records"]);
+    assert_eq!(with_fixtures, ["commit-policy", "decision-records"]);
 }
 
 #[test]

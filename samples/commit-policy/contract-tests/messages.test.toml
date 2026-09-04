@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: Apache-2.0
+# Pending-message fixtures for the commit policy: each case is a synthetic
+# commit-msg hook input checked by rules/history.star, without any Git
+# repository. Run with `bearout test samples/commit-policy`.
+
+[[cases]]
+name = "a conventional signed commit is clean"
+expect = "clean"
+
+[cases.history]
+kind = "message"
+message = "feat(policy): add the commit policy\n\nThe policy lives in rules/history.star.\n\nSigned-off-by: Example Author <author@example.test>\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases]]
+name = "a header without a type is rejected"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "added the commit policy\n\nSigned-off-by: Example Author <author@example.test>\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+line = 1
+rule = "header-shape"
+
+[[cases]]
+name = "an unknown type is rejected"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "feature: add the commit policy\n\nSigned-off-by: Example Author <author@example.test>\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+line = 1
+rule = "header-type"
+
+[[cases]]
+name = "a breaking change needs its footer"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "feat!: drop the legacy header\n\nSigned-off-by: Example Author <author@example.test>\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+rule = "breaking-footer"
+
+[[cases]]
+name = "a body must follow a blank line"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "fix: keep the blank line\nThe body starts too early.\n\nSigned-off-by: Example Author <author@example.test>\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+line = 2
+rule = "body-separation"
+
+[[cases]]
+name = "a sign-off must name the author"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "fix: sign as someone else\n\nSigned-off-by: Someone Else <else@example.test>\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+rule = "sign-off"
+message = "history check `commit-policy`: missing `Signed-off-by: Example Author <author@example.test>`"
+
+[[cases]]
+name = "a merge commit is exempt by this policy"
+expect = "clean"
+
+[cases.history]
+kind = "message"
+message = "Merge branch 'topic' into main\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+parents = ["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"]
+merge = true
+
+[[cases]]
+name = "an autosquash commit is a warning by this policy"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "fixup! feat(policy): add the commit policy\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B033"
+commit = "pending"
+line = 1
+rule = "autosquash"
+
+[[cases]]
+name = "every problem at once, in stable order"
+expect = "diagnostics"
+
+[cases.history]
+kind = "message"
+message = "Rewrote everything in one enormous commit that nobody will ever be able to review\nno blank line\n"
+author_name = "Example Author"
+author_email = "author@example.test"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+rule = "sign-off"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+line = 1
+rule = "header-length"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+line = 1
+rule = "header-shape"
+
+[[cases.diagnostics]]
+code = "B032"
+commit = "pending"
+line = 2
+rule = "body-separation"

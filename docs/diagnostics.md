@@ -31,6 +31,14 @@ expected and actual outcome classes, missing expectations, and unexpected
 diagnostics instead, and a contract diagnostic inside a case is test data
 rather than a finding of the run.
 
+`bearout history` keeps the same three codes with the meaning of the
+history report: 0 when no history check reported anything, 1 when any
+history finding was reported, warnings included, 2 when the facts could
+not be established or the policy could not run (invocation, Git, policy
+loading, malformed or incomplete history, a limit). An invalid revision,
+a missing object, or a shallow boundary inside the range is fatal, never
+a policy finding.
+
 Source failures are fatal: a Git-backed source that cannot be opened (no
 repository, no `git` executable, an unmerged index), a revision that does
 not resolve, writing generation requested against the index or a
@@ -102,6 +110,21 @@ directory and for fatal outcomes.
 | B029 | error | A selected file differs from the output of the formatter assigned to it; `bearout format` rewrites it. |
 | B030 | error | The formatter assigned to a selected file exited with a non-zero status, timed out, produced more output than the bound allows, or ended abnormally. A formatter that cannot start at all is fatal. |
 | B031 | error | A formatting write was refused (the file is reached through a symbolic link, or changed after it was read, checked again immediately before replacement) or failed; completed replacements are restored only while they still hold the bytes Bearout wrote, and every refusal and restoration failure is reported. Best-effort conflict detection, not an atomic compare-and-swap. |
+| B032 | error | An error reported by a repository history check through `error()`, targeting a commit of the history view, the pending commit, or the whole range. Only in the history report. |
+| B033 | warning | A warning reported by a repository history check through `warning()`, with the same targets. Only in the history report, where it still fails the run. |
+
+## History report ordering
+
+History findings carry a structured target instead of a path: `commit`
+(the full identity, or `pending`) with an optional message `line`, or no
+target for a range-wide finding; loading, execution, output, and
+malformed-result diagnostics (B012, B013, B014, B017, B018) keep the
+script `path`. Text renders them as `commit <key>:<line>:B032[rule]: ...`
+and `range:B033[rule]: ...`. The report sorts script diagnostics first by
+path, then range-wide findings, then commit findings in the commit order
+of the view; within a target by line, code, rule, and message; then
+deduplicates. The rule of an accepted finding is the finding's own
+`code` when given, otherwise the registered history check name.
 
 ## Repository rule identifiers
 

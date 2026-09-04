@@ -103,6 +103,34 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `limits.fixture_bytes`. `check`, `generate`, and `format` never execute
   fixtures. The `decision-records` sample declares a suite.
 
+- Experimental repository history and commit policy. `bearout history
+  range [PATH] [--base REV] [--head REV]` checks the commits reachable
+  from the head (default `HEAD`) but not from the base, both resolved
+  once and recorded with full identities, merges included, oldest first
+  in a deterministic topological order with the object identity as the
+  tie-breaker; `bearout history message [PATH] --file FILE` is the
+  commit-msg hook path over the exact message file (a regular file inside
+  the repository's Git directory), the author Git would record, `HEAD`
+  and any `MERGE_HEAD`, and the staged changes of the captured index.
+  Policy comes from the resolved head's tree or the captured index, never
+  the working tree, and only history checks run. The entry module
+  registers `history_check(name, function)`; the check receives an
+  immutable history view with raw identities (no `.mailmap`), byte-exact
+  messages, ordered parents, and changes against the first parent (or the
+  empty tree for a root) with exact modes and object identities and no
+  rename detection. `error()` and `warning()` accept `commit=` for a key
+  of the view or nothing for a range-wide finding; new codes B032 and
+  B033 appear only in the distinct history report, where any finding
+  exits 1 and an unresolvable revision, a missing object, or a shallow
+  boundary inside the range is fatal (exit 2). New limits
+  `limits.history_commits`, `limits.history_changes`,
+  `limits.history_commit_bytes`, and `limits.history_bytes`. Fixture
+  cases may supply a synthetic pending message with `[cases.history]` and
+  expect findings by `commit`. Conventional Commits and DCO sign-offs are
+  policies a repository supplies; the `commit-policy` sample shows one.
+  In the library: `bearout::history`, `HistoryMode`, `HistoryReport`,
+  `HistoryDiagnostic`, and `HistoryTarget`.
+
 ### Changed
 
 - Markdown reference checking moved out of the identifier graph; explicit
@@ -119,6 +147,10 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   literal should use `..Options::default()`.
 - `cargo run` in the repository runs the `bearout` binary by default; the
   feature-gated test fixture formatter must be named with `--bin`.
+- `CaseResult::unexpected` holds `Reported` values, a contract or a
+  history diagnostic serialized exactly as the diagnostic itself, so a
+  history fixture case can list what it did not expect; `Expectation`
+  gained the `commit` field and `Code::ALL` grew to 33 codes.
 
 ## 0.1.0 - 2026-09-03
 

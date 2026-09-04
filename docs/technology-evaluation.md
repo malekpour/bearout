@@ -154,6 +154,28 @@ lets each case start from the same unchanged base by construction. The
 cost is one more implementation of the tree semantics to keep identical,
 which the unit tests exercise against the working-directory source.
 
+## History facts: raw commit objects through `cat-file --batch`
+
+`bearout history` needs exact commit facts: identities as recorded,
+byte-exact messages, ordered parents, and changes with modes and object
+identities. Parsing `git log` or `git show` text was rejected: its
+format is human-oriented, subject to configuration (`log.mailmap`,
+`format.pretty`, `core.quotePath`), and lossy about signatures and
+continuation headers. Reading raw commit objects through one long-lived
+`cat-file --batch` process, as the blob reader already does, gives the
+object's own bytes with a known size to bound before loading; Bearout
+parses the headers itself, keeping `gpgsig` and `mergetag` continuation
+lines out of the message and refusing non-UTF-8 or malformed objects by
+name. Reachability comes from `rev-list` on pinned identities with a
+count bound, the order is computed in Bearout so ties are broken by
+identity rather than by traversal, and changes come from `diff-tree` and
+`diff-index` in raw `-z` form with `--full-index` and `--no-renames`, so
+configuration cannot turn on rename detection or abbreviate identities.
+Shallow boundaries are read from the repository's own `shallow` list so
+a truncated history is refused rather than described. This stays within
+the hardened subprocess model above; a Git library would have added a
+large dependency for facts the plumbing already exposes exactly.
+
 ## Other components
 
 - `toml_edit` parses the bootstrap, front matter, header-only resources,

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# Static bootstrap: the capability boundary for this project. The history
+# policy needs no resources of its own; the one convention record documents
+# the rules the policy enforces.
+
+version = 1
+entry = "bearout.star"
+
+[resources]
+roots = ["conventions"]
+
+[rules]
+root = "rules"
+
+[fixtures]
+files = ["contract-tests/messages.test.toml"]
