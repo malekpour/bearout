@@ -23,9 +23,10 @@ const README_SECTIONS: [&str; 8] = [
     "## Engine gaps",
 ];
 
-const EXPECTED: [&str; 8] = [
+const EXPECTED: [&str; 9] = [
     "decision-records",
     "document-assembly",
+    "document-references",
     "engineering-evidence",
     "esperanto-reference",
     "formula-language",

@@ -22,6 +22,7 @@ Read them in this order.
 | [`engineering-evidence`](engineering-evidence/) | synthetic | A hardware-shaped evidence graph | Typed evidence, analysis versus measurement, reciprocal closure, generated registers |
 | [`project-delivery`](project-delivery/) | fictional | A project delivery model | Cross-resource arithmetic, ordering and chronology, role constraints, plan and CSV outputs |
 | [`document-assembly`](document-assembly/) | fictional | A contributor handbook from versioned sections | Supersession, relations to glossary fragments, placeholder validation, assembled document |
+| [`document-references`](document-references/) | synthetic | Guides beside a topic resource | Schema-less documents, cross-document links, heading and explicit anchors, images, a policy rule over link text and alt text |
 | [`multilateral-records`](multilateral-records/) | fictional | The Aurora Research Compact | Conditional shapes, computed entry into force, chronology, party status outputs |
 
 ## Conventions

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# Static bootstrap: the capability boundary for this project. `[documents]`
+# is a read-only selection of schema-less Markdown files.
+
+version = 1
+entry = "bearout.star"
+
+[resources]
+roots = ["topics"]
+
+[rules]
+root = "rules"
+
+[documents]
+roots = ["guides"]
+files = ["README.md"]

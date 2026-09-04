@@ -421,3 +421,84 @@ fn documents_that_failed_to_read_are_not_shown_to_policy() {
     assert_no_line(&report, "B014");
     assert_no_line(&report, "B015");
 }
+
+// ---- sources -------------------------------------------------------------
+
+#[test]
+fn an_unstaged_correction_cannot_hide_a_staged_broken_link() {
+    let project = documented_project();
+    project.git_init();
+    project.commit_all("clean");
+    project.file(
+        "README.md",
+        "# Read me\n\nSee [the guide](docs/guide.md#nope).\n",
+    );
+    project.git(&["add", "README.md"]);
+    project.file(
+        "README.md",
+        "# Read me\n\nSee [the guide](docs/guide.md#usage).\n",
+    );
+    assert_clean(&project.check());
+    let index = project.check_from(Source::Index);
+    assert_line(
+        &index,
+        "README.md:3:B011: link `docs/guide.md#nope` names anchor `nope`, which `docs/guide.md` does not define",
+    );
+    assert_eq!(index.errors(), 1);
+    assert_clean(&project.check_from(Source::Revision("HEAD".to_owned())));
+}
+
+#[test]
+fn an_untracked_target_cannot_satisfy_an_index_link() {
+    let project = documented_project();
+    project.git_init();
+    project.commit_all("clean");
+    project.file(
+        "README.md",
+        "# Read me\n\nSee [new](docs/new.md#fresh) and ![new](docs/figures/new.svg).\n",
+    );
+    project.git(&["add", "README.md"]);
+    project.file("docs/new.md", "# New\n\n## Fresh\n");
+    project.file("docs/figures/new.svg", "<svg/>\n");
+    assert_clean(&project.check());
+    let index = project.check_from(Source::Index);
+    assert_line(
+        &index,
+        "README.md:3:B011: link `docs/new.md#fresh` points at a missing file",
+    );
+    assert_line(
+        &index,
+        "README.md:3:B011: image `docs/figures/new.svg` points at a missing file",
+    );
+    assert_eq!(index.errors(), 2);
+    project.git(&["add", "docs/new.md", "docs/figures/new.svg"]);
+    let index = project.check_from(Source::Index);
+    assert_clean(&index);
+    assert_eq!(index.documents, 4);
+    assert_eq!(
+        project
+            .check_from(Source::Revision("HEAD".to_owned()))
+            .documents,
+        3,
+        "the revision predates the new document"
+    );
+}
+
+#[test]
+fn source_digests_cover_documents() {
+    let project = documented_project();
+    project.git_init();
+    project.commit_all("clean");
+    let before = project.check_from(Source::Index).source.unwrap().digest;
+    project.file("docs/guide.md", "# Guide\n\n## Usage\n\nChanged.\n");
+    assert_eq!(
+        project.check_from(Source::Index).source.unwrap().digest,
+        before,
+        "an unstaged edit changes nothing in the index"
+    );
+    project.git(&["add", "docs/guide.md"]);
+    assert_ne!(
+        project.check_from(Source::Index).source.unwrap().digest,
+        before
+    );
+}

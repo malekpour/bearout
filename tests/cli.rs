@@ -484,3 +484,38 @@ fn index_snapshots_leave_no_temporary_files_behind() {
         assert_eq!(leftovers(pid), 0, "{args:?} left an index snapshot behind");
     }
 }
+
+#[test]
+fn document_counts_appear_in_text_and_json() {
+    let project = Project::with_note();
+    let path = project.path().to_str().expect("utf-8 path");
+    let (code, stdout, _) = bearout(&["check", path]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "checked 1 resource(s): clean");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[documents]\nfiles = [\"README.md\", \"NOTES.md\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    project.file("README.md", "# Read me\n\n[notes](NOTES.md#notes)\n");
+    project.file("NOTES.md", "# Notes\n");
+    let (code, stdout, _) = bearout(&["check", path]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout.trim(),
+        "checked 1 resource(s) and 2 document(s): clean"
+    );
+    let (_, stdout, _) = bearout(&["--format", "json", "check", path]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(json["documents"], 2);
+    project.file("README.md", "# Read me\n\n[notes](NOTES.md#missing)\n");
+    let (code, _, stderr) = bearout(&["check", path]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("README.md:3:B011"), "{stderr}");
+    assert!(
+        stderr.contains("checked 1 resource(s) and 2 document(s): 1 error(s)"),
+        "{stderr}"
+    );
+}
