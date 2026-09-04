@@ -321,6 +321,13 @@ impl Git {
             .command(args)
             .spawn()
             .map_err(|error| spawn_error(&error))?;
+        // Failure messages name the subcommand, not a leading global flag.
+        let name = args
+            .iter()
+            .find(|arg| !arg.starts_with("--"))
+            .copied()
+            .unwrap_or("git");
+        let args: &[&str] = &[name];
         let stderr = child.stderr.take().expect("stderr is piped");
         let stderr_reader = std::thread::spawn(move || read_bounded(stderr, MAX_STDERR_BYTES));
         let stdout = child.stdout.take().expect("stdout is piped");
@@ -1122,23 +1129,52 @@ impl GitTree {
             let prefix = String::from_utf8(location.prefix.clone())
                 .map_err(|_| GitError("the project prefix is not valid UTF-8".to_owned()))?;
             let prefix = prefix.trim_end_matches('/');
-            let subtree = git.line(&["rev-parse", "--verify", "-q", &format!("{tree}:{prefix}")]);
-            match subtree {
-                Ok(subtree) => {
-                    let subtree = ObjectId::parse(&subtree).map_err(GitError)?;
-                    if git.object_type(&subtree)? != "tree" {
-                        return Err(GitError(format!(
-                            "`{prefix}` is not a directory in revision `{revision}`"
-                        )));
-                    }
-                    subtree
-                }
-                Err(_) if empty_when_project_absent => {
+            // One literal, non-recursive listing of exactly the prefix path.
+            // Git proves absence with a successful, empty listing; a present
+            // entry carries its mode; and every operational failure, such
+            // as an unreadable object, is a non-zero exit and therefore
+            // fatal rather than a silently empty history.
+            let listing = git.output(&[
+                "--literal-pathspecs",
+                "ls-tree",
+                "-l",
+                "-z",
+                "--full-tree",
+                tree.as_str(),
+                "--",
+                prefix,
+            ])?;
+            let records = parse_ls_tree(&listing).map_err(GitError)?;
+            match records.as_slice() {
+                [] if empty_when_project_absent => {
                     return Ok((Self::from_entries(git, Entries::default()), tree));
                 }
-                Err(_) => {
+                [] => {
                     return Err(GitError(format!(
                         "revision `{revision}` does not contain the project directory `{prefix}`"
+                    )));
+                }
+                [record] if record.path == prefix.as_bytes() => match record.kind {
+                    Kind::Directory => record.object.clone(),
+                    Kind::File | Kind::Executable => {
+                        return Err(GitError(format!(
+                            "`{prefix}` is a file, not a directory, in revision `{revision}`"
+                        )));
+                    }
+                    Kind::Symlink => {
+                        return Err(GitError(format!(
+                            "`{prefix}` is a symbolic link, not a directory, in revision `{revision}`"
+                        )));
+                    }
+                    Kind::Gitlink => {
+                        return Err(GitError(format!(
+                            "`{prefix}` is a submodule, not a directory, in revision `{revision}`"
+                        )));
+                    }
+                },
+                _ => {
+                    return Err(GitError(format!(
+                        "git ls-tree listed something other than `{prefix}` for revision `{revision}`"
                     )));
                 }
             }
@@ -1994,6 +2030,73 @@ mod repository_tests {
         }
         let error = GitTree::revision(&repo.root().join("packages"), "HEAD:top.md").unwrap_err();
         assert!(error.to_string().contains("names a blob"), "{error}");
+    }
+
+    #[test]
+    fn a_baseline_goes_empty_only_when_git_proves_the_project_absent() {
+        let repo = Repo::new();
+        repo.stage("100644", b"top\n", "README");
+        let before = repo.commit("before the project");
+        repo.stage("100644", b"inside\n", "packages/docs/content/a.md");
+        let with = repo.commit("with the project");
+        std::fs::create_dir_all(repo.root().join("packages/docs")).unwrap();
+        let project = repo.root().join("packages/docs");
+
+        // Genuinely absent: an empty baseline, still an error for a candidate.
+        let (tree, id) = GitTree::baseline(&project, &before).unwrap();
+        assert_eq!(tree.entries().count(), 0);
+        assert_eq!(
+            id.as_str(),
+            repo.git(&["rev-parse", &format!("{before}^{{tree}}")])
+        );
+        let error = GitTree::revision(&project, &before).unwrap_err();
+        assert!(error.to_string().contains("does not contain"), "{error}");
+
+        // Present: the normal subtree.
+        let (tree, _) = GitTree::baseline(&project, &with).unwrap();
+        assert_eq!(
+            tree.entries()
+                .map(|(p, _)| p.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            ["content", "content/a.md"]
+        );
+
+        // A file, then a link, occupying the prefix: fatal either way.
+        repo.git(&["rm", "-r", "-q", "--cached", "packages/docs"]);
+        repo.stage("100644", b"not a directory\n", "packages/docs");
+        let as_file = repo.commit("file at the prefix");
+        let error = GitTree::baseline(&project, &as_file).unwrap_err();
+        assert!(
+            error.to_string().contains("is a file, not a directory"),
+            "{error}"
+        );
+        repo.git(&["rm", "-q", "--cached", "packages/docs"]);
+        repo.stage("120000", b"../elsewhere", "packages/docs");
+        let as_link = repo.commit("link at the prefix");
+        let error = GitTree::baseline(&project, &as_link).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is a symbolic link, not a directory"),
+            "{error}"
+        );
+        let error = GitTree::revision(&project, &as_link).unwrap_err();
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+
+        // An unreadable object on the way to the prefix: fatal, never empty.
+        let packages = repo.git(&["rev-parse", &format!("{with}:packages")]);
+        let (dir, file) = packages.split_at(2);
+        let object = repo.root().join(".git/objects").join(dir).join(file);
+        assert!(
+            object.is_file(),
+            "loose object expected at {}",
+            object.display()
+        );
+        std::fs::remove_file(&object).unwrap();
+        let error = GitTree::baseline(&project, &with).unwrap_err();
+        assert!(error.to_string().contains("git ls-tree failed"), "{error}");
+        let error = GitTree::revision(&project, &with).unwrap_err();
+        assert!(error.to_string().contains("git ls-tree failed"), "{error}");
     }
 
     #[test]
