@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Structure extracted from a Markdown body with Comrak: headings with
-//! GFM-style anchors, fenced code blocks with their info-string attributes,
-//! and links, each with source lines.
+//! GFM-style anchors, explicit HTML anchors, fenced code blocks with their
+//! info-string attributes, links, and images, each with source lines. The
+//! same parser serves resource bodies and schema-less documents.
 //!
-//! Anchors follow Comrak's GitHub-flavoured algorithm, including the `-1`,
-//! `-2` suffixes for duplicate headings. Bearout defines no anchor dialect
-//! of its own.
+//! Heading anchors follow Comrak's GitHub-flavoured algorithm, including the
+//! `-1`, `-2` suffixes for duplicate headings. Bearout defines no anchor
+//! dialect of its own. Explicit anchors are the `id` and `name` attributes
+//! of `<a>` elements in raw HTML; nothing else in HTML is interpreted, and
+//! HTML links and images are not collected.
+//!
+//! Links and images come from Comrak's inline and reference-style syntax
+//! (and autolinks), never from fenced or indented code. Their visible text
+//! and alt text are flattened to plain text.
 
 use std::collections::BTreeMap;
 
@@ -20,10 +27,46 @@ use serde::Serialize;
 pub struct Document {
     /// Headings in document order, each with the text beneath it.
     pub sections: Vec<Section>,
+    /// Explicit HTML anchors in document order.
+    pub anchors: Vec<Anchor>,
     /// Fenced code blocks in document order.
     pub blocks: Vec<Block>,
     /// Links in document order.
     pub links: Vec<Link>,
+    /// Images in document order.
+    pub images: Vec<Image>,
+}
+
+impl Document {
+    /// `true` when a `#fragment` names a heading anchor or an explicit
+    /// anchor of this document.
+    #[must_use]
+    pub fn has_anchor(&self, fragment: &str) -> bool {
+        self.sections
+            .iter()
+            .any(|section| section.anchor == fragment)
+            || self.anchors.iter().any(|anchor| anchor.id == fragment)
+    }
+}
+
+/// One explicit anchor: `<a id="...">` or `<a name="...">` in raw HTML.
+#[derive(Debug, Clone, Serialize)]
+pub struct Anchor {
+    /// The attribute value, exactly as written.
+    pub id: String,
+    /// One-based line of the element in the resource file.
+    pub line: u32,
+}
+
+/// One image.
+#[derive(Debug, Clone, Serialize)]
+pub struct Image {
+    /// Destination as written, after Markdown unescaping.
+    pub target: String,
+    /// Alt text with inline markup flattened.
+    pub alt: String,
+    /// One-based line in the resource file.
+    pub line: u32,
 }
 
 /// One heading and the text it governs.
@@ -61,6 +104,8 @@ pub struct Block {
 pub struct Link {
     /// Destination as written, after Markdown unescaping.
     pub target: String,
+    /// Visible link text with inline markup flattened.
+    pub text: String,
     /// One-based line in the resource file.
     pub line: u32,
 }
@@ -89,8 +134,10 @@ pub fn parse(body: &str, first_line: u32) -> Document {
             .saturating_sub(1)
     };
     let mut headings: Vec<HeadingDraft> = Vec::new();
+    let mut anchors = Vec::new();
     let mut blocks = Vec::new();
     let mut links = Vec::new();
+    let mut images = Vec::new();
 
     for node in root.descendants() {
         let data = node.data.borrow();
@@ -114,8 +161,30 @@ pub fn parse(body: &str, first_line: u32) -> Document {
             }
             NodeValue::Link(link) => links.push(Link {
                 target: link.url.clone(),
+                text: inline_text(node),
                 line: line_of(position.start.line),
             }),
+            NodeValue::Image(image) => images.push(Image {
+                target: image.url.clone(),
+                alt: inline_text(node),
+                line: line_of(position.start.line),
+            }),
+            NodeValue::HtmlInline(html) => {
+                for (offset, id) in explicit_anchors(html) {
+                    anchors.push(Anchor {
+                        id,
+                        line: line_of(position.start.line + offset),
+                    });
+                }
+            }
+            NodeValue::HtmlBlock(html) => {
+                for (offset, id) in explicit_anchors(&html.literal) {
+                    anchors.push(Anchor {
+                        id,
+                        line: line_of(position.start.line + offset),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -148,9 +217,88 @@ pub fn parse(body: &str, first_line: u32) -> Document {
 
     Document {
         sections,
+        anchors,
         blocks,
         links,
+        images,
     }
+}
+
+/// The `id` and `name` attribute values of every `<a>` element in a raw
+/// HTML literal, each with the number of line breaks before it. Attribute
+/// names are matched case-insensitively in any order; values may be
+/// double-quoted, single-quoted, or unquoted. This is a scanner for one
+/// element, not an HTML parser.
+fn explicit_anchors(html: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let bytes = html.as_bytes();
+    // ASCII lowercasing preserves byte offsets, so positions found in the
+    // lowered copy index the original text.
+    let lowered = html.to_ascii_lowercase();
+    let mut index = 0;
+    while let Some(start) = lowered[index..].find("<a").map(|at| at + index) {
+        let after = start + 2;
+        let is_tag = bytes
+            .get(after)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/');
+        index = after;
+        if !is_tag {
+            continue;
+        }
+        let Some(end) = html[after..].find('>').map(|at| at + after) else {
+            break;
+        };
+        let offset = html[..start].matches('\n').count();
+        for (name, value) in attributes(&html[after..end]) {
+            if (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("name"))
+                && !value.is_empty()
+            {
+                found.push((offset, value));
+            }
+        }
+        index = end + 1;
+    }
+    found
+}
+
+/// `name=value` pairs of one start tag's attribute text.
+fn attributes(text: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let mut rest = text.trim_start();
+    while !rest.is_empty() {
+        let name_end = rest
+            .find(|c: char| c.is_whitespace() || c == '=' || c == '/' || c == '>')
+            .unwrap_or(rest.len());
+        if name_end == 0 {
+            rest = &rest[1..];
+            continue;
+        }
+        let name = &rest[..name_end];
+        rest = rest[name_end..].trim_start();
+        let value = if let Some(after_equals) = rest.strip_prefix('=') {
+            let after_equals = after_equals.trim_start();
+            if let Some(quoted) = after_equals.strip_prefix('"') {
+                let end = quoted.find('"').unwrap_or(quoted.len());
+                rest = quoted.get(end + 1..).unwrap_or("");
+                quoted[..end].to_owned()
+            } else if let Some(quoted) = after_equals.strip_prefix('\'') {
+                let end = quoted.find('\'').unwrap_or(quoted.len());
+                rest = quoted.get(end + 1..).unwrap_or("");
+                quoted[..end].to_owned()
+            } else {
+                let end = after_equals
+                    .find(|c: char| c.is_whitespace() || c == '>')
+                    .unwrap_or(after_equals.len());
+                rest = &after_equals[end..];
+                after_equals[..end].to_owned()
+            }
+        } else {
+            String::new()
+        };
+        pairs.push((name.to_owned(), value));
+        rest = rest.trim_start();
+    }
+    pairs
 }
 
 fn inline_text<'a>(node: &'a AstNode<'a>) -> String {
@@ -204,7 +352,56 @@ mod tests {
         assert_eq!(doc.blocks[0].line, 11);
         assert_eq!(doc.blocks[0].section, Some(1));
         assert_eq!(doc.links[0].target, "a.md#b");
+        assert_eq!(doc.links[0].text, "x");
         assert_eq!(doc.links[0].line, 7);
+    }
+
+    #[test]
+    fn collects_link_text_images_and_explicit_anchors() {
+        let body = "<a id=\"top\"></a>\n\n# T\n\nSee [the *guide* `now`][g] and ![Flow chart](figures/flow.svg) and\n![](empty.png).\n\n<div>\n<a name='old-name' href=\"#top\">x</a> <A ID=unquoted>y</A>\n</div>\n\n```md\n[not a link](nope.md) ![no](nope.png) <a id=\"code\"></a>\n```\n\n<a href=\"#top\">no anchor here</a> <abbr id=\"x\">not an anchor</abbr>\n\n[g]: guide.md#part\n";
+        let doc = parse(body, 1);
+        let links: Vec<(&str, &str, u32)> = doc
+            .links
+            .iter()
+            .map(|link| (link.target.as_str(), link.text.as_str(), link.line))
+            .collect();
+        assert_eq!(links, [("guide.md#part", "the guide now", 5)]);
+        let images: Vec<(&str, &str, u32)> = doc
+            .images
+            .iter()
+            .map(|image| (image.target.as_str(), image.alt.as_str(), image.line))
+            .collect();
+        assert_eq!(
+            images,
+            [("figures/flow.svg", "Flow chart", 5), ("empty.png", "", 6)]
+        );
+        let anchors: Vec<(&str, u32)> = doc
+            .anchors
+            .iter()
+            .map(|anchor| (anchor.id.as_str(), anchor.line))
+            .collect();
+        assert_eq!(anchors, [("top", 1), ("old-name", 9), ("unquoted", 9)]);
+        assert!(doc.has_anchor("t"));
+        assert!(doc.has_anchor("old-name"));
+        assert!(!doc.has_anchor("code"));
+        assert!(!doc.has_anchor("x"));
+    }
+
+    #[test]
+    fn explicit_anchor_scanner_is_tolerant() {
+        assert_eq!(
+            explicit_anchors("<a\n  name=\"two\"\n  id='three'>"),
+            [(0, "two".to_owned()), (0, "three".to_owned())]
+        );
+        assert_eq!(
+            explicit_anchors("<a id=\"\"></a><a></a><abbr id=\"n\">"),
+            []
+        );
+        assert_eq!(
+            explicit_anchors("x\n<a href=x id=y>"),
+            [(1, "y".to_owned())]
+        );
+        assert_eq!(explicit_anchors("<a id=\"unterminated"), []);
     }
 
     #[test]

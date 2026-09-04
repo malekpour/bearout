@@ -22,6 +22,7 @@
 //! capability, which the Git-backed sources do not have.
 
 pub mod bootstrap;
+mod document;
 mod envelope;
 mod fs;
 mod generate;
@@ -258,12 +259,19 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         ));
     }
 
-    // Phase: discovery.
+    // Phase: discovery. Resources first; a path they claim is never also a
+    // schema-less document.
     let files = discover(tree, &bootstrap)?;
     report.resources = files.len();
+    let document_paths = document::discover(tree, &bootstrap, &files)?;
+    report.documents = document_paths.len();
 
     // Phase: parsing.
     let mut parsed = parse_all(tree, &bootstrap, &files, &mut report);
+    let documents = read_documents(tree, &bootstrap, &document_paths, &mut report);
+    // Later phases index and expose the documents; until then only their
+    // count and their read diagnostics are observable.
+    let _ = documents.iter().map(document::Document::view).count();
 
     // Repository policy is loaded before structural validation because the
     // entry module registers the schemas and shapes that validation needs.
@@ -436,6 +444,22 @@ fn parse_all(
 
 /// Read and parse every registered shape. Like rule modules, shapes are
 /// never reached through a symbolic link.
+fn read_documents(
+    tree: &dyn ReadTree,
+    bootstrap: &Bootstrap,
+    paths: &[ProjectPath],
+    report: &mut Report,
+) -> Vec<document::Document> {
+    let mut documents = Vec::new();
+    for path in paths {
+        match document::read(tree, bootstrap, path) {
+            Ok(document) => documents.push(document),
+            Err(diagnostic) => report.push(diagnostic),
+        }
+    }
+    documents
+}
+
 fn load_shapes(
     tree: &dyn ReadTree,
     policy: &Policy,

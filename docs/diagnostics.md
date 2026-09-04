@@ -67,6 +67,7 @@ directory and for fatal outcomes.
 | B019 | error | A generation plan entry is invalid, its template is missing or unreadable, its context holds a number no template value can represent, rendering failed or exceeded `limits.template_fuel` or `limits.output_bytes`, or the provenance header is absent. |
 | B020 | error | A generated output is missing, stale, unowned, orphaned, or changed ownership, or the state manifest is out of date or invalid. |
 | B021 | error | Delivering a generated output failed (with restoration attempted and reported), or delivery was refused to protect a file Bearout does not own. |
+| B022 | error | A schema-less document selected by `[documents]` could not be read, is not valid UTF-8, or exceeds `limits.document_bytes`. |
 
 ## Repository rule identifiers
 

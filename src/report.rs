@@ -53,6 +53,9 @@ pub enum Code {
     OutputState,
     /// Delivering a generated output to the project tree failed.
     Delivery,
+    /// A schema-less document could not be read, is not valid UTF-8, or
+    /// exceeds the document size limit.
+    DocumentUnreadable,
 }
 
 impl Code {
@@ -81,6 +84,7 @@ impl Code {
             Self::PlanInvalid => "B019",
             Self::OutputState => "B020",
             Self::Delivery => "B021",
+            Self::DocumentUnreadable => "B022",
         }
     }
 
@@ -94,7 +98,7 @@ impl Code {
     }
 
     /// Every code, in catalog order.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Unreadable,
         Self::Envelope,
         Self::SchemaIdentity,
@@ -116,6 +120,7 @@ impl Code {
         Self::PlanInvalid,
         Self::OutputState,
         Self::Delivery,
+        Self::DocumentUnreadable,
     ];
 }
 
@@ -230,6 +235,9 @@ pub struct Report {
     pub ok: bool,
     /// Number of discovered resources.
     pub resources: usize,
+    /// Number of discovered schema-less documents; zero when the bootstrap
+    /// selects none.
+    pub documents: usize,
     /// The Git-backed source examined, when one was selected. Experimental.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceInfo>,

@@ -248,12 +248,7 @@ fn check_links(
                         continue;
                     }
                 };
-                if !target
-                    .doc
-                    .sections
-                    .iter()
-                    .any(|section| section.anchor == anchor)
-                {
+                if !target.doc.has_anchor(&anchor) {
                     diagnostics.push(report(format!(
                         "link `{}` names anchor `{anchor}`, which `{}` does not define",
                         link.target, target.path

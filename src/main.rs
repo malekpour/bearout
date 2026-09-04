@@ -130,11 +130,19 @@ fn print_text(report: &Report, verb: &str) {
     } else {
         format!(", {} output(s) {verb}", report.outputs.len())
     };
+    let documents = if report.documents == 0 {
+        String::new()
+    } else {
+        format!(" and {} document(s)", report.documents)
+    };
     if report.is_clean() {
-        println!("checked {} resource(s): clean{outputs}", report.resources);
+        println!(
+            "checked {} resource(s){documents}: clean{outputs}",
+            report.resources
+        );
     } else {
         eprintln!(
-            "checked {} resource(s): {} error(s){outputs}",
+            "checked {} resource(s){documents}: {} error(s){outputs}",
             report.resources,
             report.errors()
         );

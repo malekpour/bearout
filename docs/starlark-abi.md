@@ -79,9 +79,11 @@ A dict with these keys, all frozen:
 | `fields` | Dict of repository-owned front-matter fields. TOML dates are strings in TOML text form. |
 | `body` | The Markdown body byte-for-byte. |
 | `sections` | List of `{level, title, anchor, line, text}` in document order. `anchor` is the GFM heading anchor. |
+| `anchors` | List of `{id, line}` for explicit `<a id>` and `<a name>` anchors in raw HTML. |
 | `blocks` | List of fenced blocks `{lang, attrs, content, line, section}`. |
 | `fragments` | List of `{kind, id, fields, line, section}` for blocks tagged `bearout=<kind>`. |
-| `links` | List of `{target, line}`. |
+| `links` | List of `{target, text, line}`; `text` is the visible link text flattened to plain text. |
+| `images` | List of `{target, alt, line}`; `alt` is the alt text flattened to plain text. |
 | `relations` | Dict from relation field name (including `refs`) to the list of ids it names, as written. |
 | `referenced_by` | List of `{from, field}` for every relation that names this resource or one of its fragments. |
 
