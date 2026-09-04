@@ -108,8 +108,10 @@ pub fn gather(
 }
 
 /// Validate structure with the candidate's policy and shapes, then build
-/// the graph. Markdown references are checked for the candidate only:
-/// historical references were checked when their revision was.
+/// the identifier graph, on either side: duplicate identifiers and typed
+/// relations are checked for the baseline too, since policy pairs records
+/// through them. Markdown links, images, and anchors are checked for the
+/// candidate only; the baseline's were checked when its revision was.
 pub fn settle(
     tree: &dyn ReadTree,
     gathered: Gathered,

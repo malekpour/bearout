@@ -217,9 +217,12 @@ registers, or that fails the current shape, is reported and withheld from
 policy rather than exposed unvalidated: the current policy must retain
 enough schema knowledge to interpret the history it compares against.
 Validators run once per candidate resource, never per baseline resource;
-comparison is a project-level concern. Historical references are not
-re-checked against either tree, and no generation runs against the
-baseline. A revision that predates the project directory or its
+comparison is a project-level concern. The baseline's identifier graph is
+rebuilt, so duplicate historical identifiers and unresolved or mistyped
+typed relations are reported on the baseline side, because policy pairs
+records through that graph; the baseline's Markdown links, images, and
+anchors are not re-checked against either tree, and no generation runs
+against the baseline. A revision that predates the project directory or its
 `bearout.toml` is an empty historical project, so a wholly added project
 compares; a malformed historical `bearout.toml`, or one naming roots and
 files its tree lacks, is fatal, since it leaves the historical
