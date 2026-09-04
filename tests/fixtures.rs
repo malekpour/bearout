@@ -264,7 +264,7 @@ fn missing_and_unexpected_diagnostics_fail_a_case() {
     let one_of_two = &report.cases[2];
     assert!(one_of_two.missing.is_empty());
     assert_eq!(one_of_two.unexpected.len(), 1);
-    assert_eq!(one_of_two.unexpected[0].path, "content/note-d.md");
+    assert_eq!(one_of_two.unexpected[0].path(), Some("content/note-d.md"));
 
     let two_of_one = &report.cases[3];
     assert_eq!(two_of_one.missing.len(), 1);
@@ -300,7 +300,7 @@ fn contains_matching_permits_unrelated_diagnostics_and_exact_does_not() {
         "allowed extras are not listed"
     );
     assert_eq!(report.cases[1].unexpected.len(), 1);
-    assert_eq!(report.cases[1].unexpected[0].code, Code::PolicyWarning);
+    assert_eq!(report.cases[1].unexpected[0].code(), Code::PolicyWarning);
     // A warning alone is a diagnostics outcome, never clean.
     project.file(FIXTURE_FILE, &note_case("warned", "warn me", "clean"));
     let report = test(&project);
@@ -414,7 +414,7 @@ fn every_structured_field_is_matched() {
     assert_eq!(report.cases[0].file, FIXTURE_FILE);
     let wrong_line = &report.cases[1];
     assert_eq!(wrong_line.missing[0].line, Some(3));
-    assert_eq!(wrong_line.unexpected[0].line, Some(2));
+    assert_eq!(wrong_line.unexpected[0].line(), Some(2));
     // A severity that contradicts its code is refused when parsing.
     project.file(
         FIXTURE_FILE,
@@ -1272,7 +1272,7 @@ fn reports_are_identical_across_runs_and_ordered() {
     let unexpected: Vec<&str> = first.cases[0]
         .unexpected
         .iter()
-        .map(|d| d.path.as_str())
+        .map(|d| d.path().unwrap())
         .collect();
     assert_eq!(
         unexpected,
@@ -1407,4 +1407,343 @@ fn check_generate_and_format_never_execute_fixtures() {
             .unwrap()
             .contains("lies beneath resource root `content`")
     );
+}
+
+// ---- history cases ------------------------------------------------------
+
+/// A sample-style commit policy: a `<type>: <summary>` header from a
+/// short allow-list, a sign-off naming the author, and merge and
+/// autosquash exemptions, every one of them this policy's own decision.
+const COMMIT_POLICY: &str = r#"TYPES = ["feat", "fix", "chore"]
+
+def commit_policy(history):
+    findings = []
+    for commit in history["commits"]:
+        key = commit["key"]
+        if commit["merge"]:
+            continue
+        subject = commit["subject"]
+        if subject.startswith("fixup! ") or subject.startswith("squash! "):
+            findings.append(warning("autosquash commit awaits its rebase", commit = key, code = "autosquash"))
+            continue
+        head, sep, summary = subject.partition(": ")
+        if sep == "" or head not in TYPES or summary.strip() == "":
+            findings.append(error("subject must be `<type>: <summary>` with a known type", commit = key, line = 1, code = "header"))
+        author = commit["author"]
+        expected = "Signed-off-by: %s <%s>" % (author["name"], author["email"])
+        if expected not in commit["message"].split("\n"):
+            findings.append(error("missing `%s`" % expected, commit = key, code = "sign-off"))
+    return findings
+
+history_check("commit-policy", commit_policy)
+"#;
+
+fn history_project() -> Project {
+    let project = Project::with_note();
+    project.file("bearout.toml", &bootstrap(""));
+    project.file(common::ENTRY, COMMIT_POLICY);
+    project
+}
+
+fn history_case(name: &str, body: &str, expectations: &str) -> String {
+    format!(
+        "[[cases]]\nname = \"{name}\"\n{body}\n[cases.history]\nkind = \"message\"\nauthor_name = \"Example Author\"\nauthor_email = \"author@example.test\"\n{expectations}\n"
+    )
+}
+
+#[test]
+fn pending_message_cases_exercise_the_history_policy() {
+    let project = history_project();
+    project.file(
+        FIXTURE_FILE,
+        &format!(
+            "{}{}{}{}{}{}{}",
+            history_case(
+                "a conventional signed message passes",
+                "expect = \"clean\"",
+                "message = \"feat: add a capability\\n\\nSigned-off-by: Example Author <author@example.test>\\n\""
+            ),
+            history_case(
+                "a bad header is caught",
+                "expect = \"diagnostics\"\nmatch = \"exact\"",
+                "message = \"added stuff\\n\\nSigned-off-by: Example Author <author@example.test>\\n\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nline = 1\nrule = \"header\""
+            ),
+            history_case(
+                "a missing sign-off is caught",
+                "expect = \"diagnostics\"",
+                "message = \"fix: something\\n\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nrule = \"sign-off\"\nmessage = \"history check `commit-policy`: missing `Signed-off-by: Example Author <author@example.test>`\""
+            ),
+            history_case(
+                "a mismatched sign-off is caught",
+                "expect = \"diagnostics\"",
+                "message = \"fix: something\\n\\nSigned-off-by: Someone Else <else@example.test>\\n\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nrule = \"sign-off\""
+            ),
+            history_case(
+                "a merge is exempt by this policy",
+                "expect = \"clean\"",
+                "message = \"Merge branch 'topic'\\n\"\nparents = [\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]\nmerge = true"
+            ),
+            history_case(
+                "an autosquash commit is a warning by this policy",
+                "expect = \"diagnostics\"",
+                "message = \"fixup! feat: add a capability\\n\"\n\n[[cases.diagnostics]]\ncode = \"B033\"\nseverity = \"warning\"\ncommit = \"pending\"\nrule = \"autosquash\""
+            ),
+            history_case(
+                "both problems at once, in order",
+                "expect = \"diagnostics\"",
+                "message = \"nope\"\nauthor_timestamp = 1700000000\nauthor_timezone = \"+0200\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\nrule = \"sign-off\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\nrule = \"header\"\nline = 1"
+            ),
+        ),
+    );
+    let report = test(&project);
+    assert_suite_ok(&report);
+    assert_eq!(report.total, 7);
+    // The same suite passes without any Git repository: history cases make
+    // no Git call.
+    assert!(!project.path().join(".git").exists());
+
+    // Expectations match structurally, and exact matching still refuses
+    // extras: a case expecting only the header finding fails on the
+    // sign-off finding, and lists it.
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "only the header",
+            "expect = \"diagnostics\"",
+            "message = \"nope\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\nrule = \"header\"",
+        ),
+    );
+    let report = test(&project);
+    assert!(!report.ok);
+    let case = &report.cases[0];
+    assert_eq!(case.unexpected.len(), 1);
+    assert_eq!(case.unexpected[0].commit(), Some("pending"));
+    assert_eq!(case.unexpected[0].rule(), Some("sign-off"));
+    assert_eq!(
+        case.unexpected[0].to_string(),
+        "commit pending:B032[sign-off]: history check `commit-policy`: missing `Signed-off-by: Example Author <author@example.test>`"
+    );
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["cases"][0]["unexpected"][0]["commit"], "pending");
+    assert!(json["cases"][0]["unexpected"][0].get("path").is_none());
+    // A wrong commit key in an expectation is simply missing.
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "wrong key",
+            "expect = \"diagnostics\"\nmatch = \"contains\"",
+            "message = \"nope\"\n\n[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"0000000000000000000000000000000000000000\"\nrule = \"header\"",
+        ),
+    );
+    let report = test(&project);
+    assert!(!report.ok);
+    assert_eq!(report.cases[0].missing.len(), 1);
+    assert_eq!(
+        report.cases[0].missing[0].to_string(),
+        "B032 commit=0000000000000000000000000000000000000000 rule=header"
+    );
+}
+
+#[test]
+fn history_cases_run_only_history_checks_and_no_programs() {
+    let project = history_project();
+    let formatter = env!("CARGO_BIN_EXE_bearout-fixture-formatter").replace('\\', "/");
+    let marker = project.path().join("formatter-ran");
+    let marker_text = marker.to_str().unwrap().replace('\\', "/");
+    // An ordinary check that would fail, a validator that would fail, and
+    // a formatter that would leave a marker: none of them runs for a
+    // history case.
+    project.file(
+        common::ENTRY,
+        &format!(
+            "{COMMIT_POLICY}\ndef never(p):\n    return [error(\"ordinary check ran\", resource = \"note-a\")]\ndef bad(r):\n    return [error(\"validator ran\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\", validate = bad)\ncheck(\"never\", never)\n"
+        ),
+    );
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{formatter}\", \"touch\", \"{marker_text}\"]\nextensions = [\"txt\"]\n",
+            bootstrap("")
+        ),
+    );
+    project.file("src/a.txt", "text\n");
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "history only",
+            "expect = \"clean\"",
+            "message = \"feat: x\\n\\nSigned-off-by: Example Author <author@example.test>\\n\"",
+        ),
+    );
+    let report = bearout::test(
+        project.path(),
+        &Options {
+            allow_formatters: true,
+            ..Options::default()
+        },
+    );
+    assert_suite_ok(&report);
+    assert!(!marker.exists(), "the formatter ran for a history case");
+    // A mutation case in the same suite still runs the whole pipeline.
+    project.file(
+        FIXTURE_FILE,
+        &format!(
+            "{}{}",
+            history_case(
+                "history only",
+                "expect = \"clean\"",
+                "message = \"feat: x\\n\\nSigned-off-by: Example Author <author@example.test>\\n\""
+            ),
+            write_case(
+                "mutation",
+                "expect = \"diagnostics\"\nmatch = \"contains\"\n[[cases.mutations]]\nwrite = \"src/b.txt\"\ncontent = \"b\\n\"\n[[cases.diagnostics]]\ncode = \"B015\"\n"
+            ),
+        ),
+    );
+    let report = bearout::test(
+        project.path(),
+        &Options {
+            allow_formatters: true,
+            ..Options::default()
+        },
+    );
+    assert_suite_ok(&report);
+    assert!(marker.exists());
+
+    // Without a history check, a history case is a fatal outcome of that
+    // case, never a pass; a policy that does not load is fatal too.
+    project.file("bearout.toml", &bootstrap(""));
+    project.file(
+        common::ENTRY,
+        "schema(\"example/test/note@1\", shape = \"note.schema.toml\")\n",
+    );
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "no history check",
+            "expect = \"clean\"",
+            "message = \"feat: x\\n\"",
+        ),
+    );
+    let report = test(&project);
+    assert!(!report.ok);
+    assert_eq!(report.cases[0].actual, Outcome::Fatal);
+    assert!(
+        report.cases[0]
+            .fatal
+            .as_deref()
+            .unwrap()
+            .contains("registers no history check")
+    );
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "no history check expected",
+            "expect = \"fatal\"\nfatal = \"registers no history check\"",
+            "message = \"feat: x\\n\"",
+        ),
+    );
+    assert_suite_ok(&test(&project));
+    project.file(common::ENTRY, "this is not starlark\n");
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "broken policy",
+            "expect = \"fatal\"\nfatal = \"did not load\"",
+            "message = \"feat: x\\n\"",
+        ),
+    );
+    assert_suite_ok(&test(&project));
+}
+
+#[test]
+fn malformed_history_cases_are_fatal_for_the_suite() {
+    let project = history_project();
+    for (body, expected) in [
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n",
+            "history: `kind` is required",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"range\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n",
+            "`kind` must be `message`",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n",
+            "`message` is required",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_email = \"a@b\"\n",
+            "`author_name` is required",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\n",
+            "`author_email` is required",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a<b\"\n",
+            "author identity",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nauthor_timezone = \"UTC\"\n",
+            "invalid timezone",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nauthor_timestamp = \"now\"\n",
+            "`author_timestamp` must be an integer",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nparents = [\"abc\"]\n",
+            "is not a full commit identity",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nmerge = true\n",
+            "`merge = true` contradicts the 0 `parents` given",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\nscript = \"x\"\n",
+            "unknown key `script`",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\nbaseline = true\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n",
+            "`history` and `baseline` are mutually exclusive",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\n[[cases.mutations]]\ndelete = \"content/note-a.md\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n",
+            "`history` and `mutations` are mutually exclusive",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"diagnostics\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n[[cases.diagnostics]]\ncode = \"B032\"\nside = \"baseline\"\n",
+            "`side` does not apply to a history case",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"diagnostics\"\n[cases.history]\nkind = \"message\"\nmessage = \"m\"\nauthor_name = \"a\"\nauthor_email = \"a@b\"\n[[cases.diagnostics]]\ncode = \"B032\"\ncommit = \"pending\"\npath = \"x\"\n",
+            "`commit` is exclusive with `path` and `side`",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"diagnostics\"\n[[cases.mutations]]\ndelete = \"content/note-a.md\"\n[[cases.diagnostics]]\ncode = \"B015\"\ncommit = \"pending\"\n",
+            "`commit` applies only to a history case",
+        ),
+        (
+            "[[cases]]\nname = \"x\"\nexpect = \"clean\"\nhistory = 3\n",
+            "`history` must be a table",
+        ),
+    ] {
+        project.file(FIXTURE_FILE, body);
+        assert_suite_fatal(&test(&project), expected);
+    }
+    // The message is bounded by the history limit.
+    project.file(
+        "bearout.toml",
+        &bootstrap("[limits]\nhistory_commit_bytes = 8\n"),
+    );
+    project.file(
+        FIXTURE_FILE,
+        &history_case(
+            "long",
+            "expect = \"clean\"",
+            "message = \"feat: far too long\"",
+        ),
+    );
+    assert_suite_fatal(&test(&project), "above `limits.history_commit_bytes` = 8");
 }

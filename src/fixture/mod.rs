@@ -33,13 +33,15 @@ use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 use self::matching::Expectation;
 use self::overlay::{Mutation, Overlay};
-pub use self::report::{CaseResult, Matching, Outcome, TestReport};
+pub use self::report::{CaseResult, Matching, Outcome, Reported, TestReport};
 use crate::bootstrap::{self, Bootstrap, Limits, MANIFEST_NAME};
+use crate::git::ObjectId;
+use crate::history::capture::{self as capture, History, Identity};
 use crate::paths::ProjectPath;
 use crate::policy::views::BaselineIdentity;
-use crate::report::{Code, Report, Severity, Side};
+use crate::report::{Code, Severity, Side};
 use crate::tree::ReadTree;
-use crate::{BaselineInput, Command, Inputs, Opened, Options, hygiene};
+use crate::{BaselineInput, Command, Inputs, Opened, Options, history, hygiene, policy};
 
 /// The longest case name accepted.
 const MAX_NAME_CHARS: usize = 200;
@@ -51,6 +53,9 @@ struct Case {
     file: ProjectPath,
     mutations: Vec<Mutation>,
     baseline: bool,
+    /// A synthetic pending commit: the case runs the history checks over
+    /// it instead of checking a mutated candidate.
+    history: Option<History>,
     expect: Outcome,
     matching: Matching,
     expectations: Vec<Expectation>,
@@ -63,6 +68,7 @@ struct Declared {
     file: ProjectPath,
     mutations: Vec<DeclaredMutation>,
     baseline: bool,
+    history: Option<History>,
     expect: Outcome,
     matching: Matching,
     expectations: Vec<Expectation>,
@@ -143,7 +149,7 @@ impl Suite {
             let bytes = budget.read(tree, file, "fixture file")?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| format!("fixture file `{file}` is not valid UTF-8"))?;
-            declared.extend(parse_file(file, &text)?);
+            declared.extend(parse_file(file, &text, limits)?);
         }
         check_limits(&declared, limits)?;
         let mut cases = Vec::with_capacity(declared.len());
@@ -174,6 +180,7 @@ impl Suite {
                 file: case.file,
                 mutations,
                 baseline: case.baseline,
+                history: case.history,
                 expect: case.expect,
                 matching: case.matching,
                 expectations: case.expectations,
@@ -215,7 +222,7 @@ fn check_limits(declared: &[Declared], limits: &Limits) -> Result<(), String> {
 }
 
 /// Parse one fixture file: `[[cases]]` in file order.
-fn parse_file(file: &ProjectPath, text: &str) -> Result<Vec<Declared>, String> {
+fn parse_file(file: &ProjectPath, text: &str, limits: &Limits) -> Result<Vec<Declared>, String> {
     let context = |message: String| format!("fixture file `{file}`: {message}");
     let doc: DocumentMut = text.parse().map_err(|error: toml_edit::TomlError| {
         context(format!("not valid TOML: {}", error.message()))
@@ -236,14 +243,14 @@ fn parse_file(file: &ProjectPath, text: &str) -> Result<Vec<Declared>, String> {
     let mut declared = Vec::with_capacity(cases.len());
     for (index, case) in cases.iter().enumerate() {
         declared.push(
-            parse_case(file, *case)
+            parse_case(file, *case, limits)
                 .map_err(|message| context(format!("case {}: {message}", index + 1)))?,
         );
     }
     Ok(declared)
 }
 
-const CASE_KEYS: [&str; 7] = [
+const CASE_KEYS: [&str; 8] = [
     "name",
     "expect",
     "match",
@@ -251,9 +258,14 @@ const CASE_KEYS: [&str; 7] = [
     "fatal",
     "mutations",
     "diagnostics",
+    "history",
 ];
 
-fn parse_case(file: &ProjectPath, table: &dyn TableLike) -> Result<Declared, String> {
+fn parse_case(
+    file: &ProjectPath,
+    table: &dyn TableLike,
+    limits: &Limits,
+) -> Result<Declared, String> {
     reject_unknown(table, &CASE_KEYS)?;
     let name = string(table, "name")?.ok_or_else(|| "`name` is required".to_owned())?;
     if name.is_empty() || name.trim() != name {
@@ -303,6 +315,21 @@ fn parse_case(file: &ProjectPath, table: &dyn TableLike) -> Result<Declared, Str
         }
         Some(text) => Some(text.to_owned()),
     };
+    let history = match table.get("history") {
+        None => None,
+        Some(item) => {
+            let history = item
+                .as_table_like()
+                .ok_or_else(|| "`history` must be a table".to_owned())?;
+            if table.get("mutations").is_some() {
+                return Err("`history` and `mutations` are mutually exclusive: a history case checks a synthetic pending commit, not a mutated tree".to_owned());
+            }
+            if baseline {
+                return Err("`history` and `baseline` are mutually exclusive".to_owned());
+            }
+            Some(parse_history(history, limits).map_err(|message| format!("history: {message}"))?)
+        }
+    };
     let mutations = match table.get("mutations") {
         None => Vec::new(),
         Some(item) => table_list(item, "mutations")?
@@ -337,7 +364,7 @@ fn parse_case(file: &ProjectPath, table: &dyn TableLike) -> Result<Declared, Str
                 .iter()
                 .enumerate()
                 .map(|(index, expectation)| {
-                    parse_expectation(*expectation)
+                    parse_expectation(*expectation, history.is_some())
                         .map_err(|message| format!("diagnostic {}: {message}", index + 1))
                 })
                 .collect::<Result<Vec<_>, _>>()?
@@ -348,10 +375,120 @@ fn parse_case(file: &ProjectPath, table: &dyn TableLike) -> Result<Declared, Str
         file: file.clone(),
         mutations,
         baseline,
+        history,
         expect,
         matching,
         expectations,
         fatal,
+    })
+}
+
+/// `[cases.history]`: a synthetic pending commit. `kind` must be
+/// `message`; `message`, `author_name`, and `author_email` are required;
+/// `author_timestamp` (default 0) and `author_timezone` (default
+/// `+0000`) complete the raw identity; `parents` lists full commit
+/// identities and `merge`, when given, must agree with their number. The
+/// view is built by the same constructor as the real pending-message
+/// command: no tree, no committer, no changes.
+fn parse_history(table: &dyn TableLike, limits: &Limits) -> Result<History, String> {
+    reject_unknown(
+        table,
+        &[
+            "kind",
+            "message",
+            "author_name",
+            "author_email",
+            "author_timestamp",
+            "author_timezone",
+            "parents",
+            "merge",
+        ],
+    )?;
+    match string(table, "kind")? {
+        Some("message") => {}
+        Some(other) => {
+            return Err(format!(
+                "`kind` must be `message`, not `{other}`; range fixtures are not a fixture vocabulary"
+            ));
+        }
+        None => return Err("`kind` is required".to_owned()),
+    }
+    let message = string(table, "message")?.ok_or_else(|| "`message` is required".to_owned())?;
+    if message.len() as u64 > limits.history_commit_bytes {
+        return Err(format!(
+            "`message` is {} bytes, above `limits.history_commit_bytes` = {}",
+            message.len(),
+            limits.history_commit_bytes
+        ));
+    }
+    if message.contains('\0') {
+        return Err("`message` must not contain a NUL character".to_owned());
+    }
+    let name =
+        string(table, "author_name")?.ok_or_else(|| "`author_name` is required".to_owned())?;
+    let email =
+        string(table, "author_email")?.ok_or_else(|| "`author_email` is required".to_owned())?;
+    let timestamp = match table.get("author_timestamp") {
+        None => 0,
+        Some(item) => item
+            .as_integer()
+            .ok_or_else(|| "`author_timestamp` must be an integer".to_owned())?,
+    };
+    let timezone = string(table, "author_timezone")?.unwrap_or("+0000");
+    let identity = format!("{name} <{email}> {timestamp} {timezone}");
+    let author =
+        capture::parse_identity(&identity).map_err(|problem| format!("author {problem}"))?;
+    let parents = match table.get("parents") {
+        None => Vec::new(),
+        Some(item) => item
+            .as_array()
+            .ok_or_else(|| "`parents` must be an array of commit identities".to_owned())?
+            .iter()
+            .map(|value| {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| "`parents` must be an array of commit identities".to_owned())?;
+                if !matches!(text.len(), 40 | 64) {
+                    return Err(format!(
+                        "`parents` entry `{text}` is not a full commit identity"
+                    ));
+                }
+                ObjectId::parse(text).map_err(|error| format!("`parents`: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    if let Some(item) = table.get("merge") {
+        let merge = item
+            .as_bool()
+            .ok_or_else(|| "`merge` must be a boolean".to_owned())?;
+        if merge != (parents.len() > 1) {
+            return Err(format!(
+                "`merge = {merge}` contradicts the {} `parents` given; a merge has at least two",
+                parents.len()
+            ));
+        }
+    }
+    Ok(History {
+        mode: capture::Mode::Message,
+        base: None,
+        head: None,
+        commits: vec![capture::Commit {
+            key: "pending".to_owned(),
+            id: None,
+            pending: true,
+            tree: None,
+            change_basis: parents.first().cloned(),
+            parents,
+            author: Identity {
+                name: author.name,
+                email: author.email,
+                timestamp: author.timestamp,
+                timezone: author.timezone,
+            },
+            committer: None,
+            message: message.to_owned(),
+            changes: Vec::new(),
+        }],
     })
 }
 
@@ -413,11 +550,11 @@ fn parse_mutation(table: &dyn TableLike) -> Result<DeclaredMutation, String> {
     }
 }
 
-fn parse_expectation(table: &dyn TableLike) -> Result<Expectation, String> {
+fn parse_expectation(table: &dyn TableLike, history: bool) -> Result<Expectation, String> {
     reject_unknown(
         table,
         &[
-            "code", "severity", "path", "line", "side", "rule", "message",
+            "code", "severity", "path", "line", "side", "rule", "message", "commit",
         ],
     )?;
     let code_text = string(table, "code")?.ok_or_else(|| "`code` is required".to_owned())?;
@@ -475,6 +612,20 @@ fn parse_expectation(table: &dyn TableLike) -> Result<Expectation, String> {
         Some(rule) => Some(rule.to_owned()),
     };
     let message = string(table, "message")?.map(str::to_owned);
+    let commit = match string(table, "commit")? {
+        None => None,
+        Some("") => return Err("`commit` must be non-empty".to_owned()),
+        Some(commit) => Some(commit.to_owned()),
+    };
+    if commit.is_some() && (path.is_some() || side.is_some()) {
+        return Err("`commit` is exclusive with `path` and `side`".to_owned());
+    }
+    if history && side.is_some() {
+        return Err("`side` does not apply to a history case".to_owned());
+    }
+    if !history && commit.is_some() {
+        return Err("`commit` applies only to a history case".to_owned());
+    }
     Ok(Expectation {
         code,
         severity,
@@ -483,6 +634,7 @@ fn parse_expectation(table: &dyn TableLike) -> Result<Expectation, String> {
         side,
         rule,
         message,
+        commit,
     })
 }
 
@@ -596,6 +748,11 @@ fn run_inner(root: &Path, options: &Options) -> Result<TestReport, String> {
         ..TestReport::default()
     };
     for (case, overlay) in suite.cases.iter().zip(&overlays) {
+        if let Some(history) = &case.history {
+            let outcome = check_history(base.as_ref(), &bootstrap, options, history);
+            report.cases.push(judge(case, &outcome));
+            continue;
+        }
         let introduced = overlay.introduced();
         let universe = match &opened {
             Opened::Working(_) => hygiene::Universe::WorkingDirectory {
@@ -621,8 +778,18 @@ fn run_inner(root: &Path, options: &Options) -> Result<TestReport, String> {
             writer: None,
         };
         let outcome = match crate::evaluate(root, Command::Check, options, &inputs) {
-            Ok(report) => report,
-            Err(message) => Report::fatal(message),
+            Ok(report) => Judged {
+                fatal: report.fatal,
+                diagnostics: report
+                    .diagnostics
+                    .into_iter()
+                    .map(Reported::Contract)
+                    .collect(),
+            },
+            Err(message) => Judged {
+                fatal: Some(message),
+                diagnostics: Vec::new(),
+            },
         };
         report.cases.push(judge(case, &outcome));
     }
@@ -630,8 +797,65 @@ fn run_inner(root: &Path, options: &Options) -> Result<TestReport, String> {
     Ok(report)
 }
 
+/// What a case's candidate produced, in either vocabulary.
+struct Judged {
+    fatal: Option<String>,
+    diagnostics: Vec<Reported>,
+}
+
+/// Run the registered history checks over a synthetic pending commit:
+/// the policy is loaded from the unchanged selected tree, the view is
+/// built by the same constructor and admitted by the same rules as the
+/// real pending-message command, and no Git call or external program is
+/// involved.
+fn check_history(
+    tree: &dyn ReadTree,
+    bootstrap: &Bootstrap,
+    options: &Options,
+    history: &History,
+) -> Judged {
+    let cancel = options.cancel.clone().unwrap_or_default();
+    let mut load_diagnostics = Vec::new();
+    let policy = policy::load(tree, bootstrap, cancel, &mut load_diagnostics);
+    let mut diagnostics: Vec<Reported> = load_diagnostics
+        .into_iter()
+        .map(|diagnostic| Reported::History(history::from_contract(diagnostic)))
+        .collect();
+    let Some(policy) = policy else {
+        return Judged {
+            fatal: Some(
+                "the repository policy did not load; the diagnostics name the problem".to_owned(),
+            ),
+            diagnostics,
+        };
+    };
+    if policy.history_checks.is_empty() {
+        return Judged {
+            fatal: Some(
+                "the policy registers no history check; register one with `history_check(name, function)` in the entry module"
+                    .to_owned(),
+            ),
+            diagnostics,
+        };
+    }
+    match history::run_checks(&policy, history) {
+        Ok(mut found) => {
+            history::sort_diagnostics(&mut found, history);
+            diagnostics.extend(found.into_iter().map(Reported::History));
+            Judged {
+                fatal: None,
+                diagnostics,
+            }
+        }
+        Err(message) => Judged {
+            fatal: Some(message),
+            diagnostics,
+        },
+    }
+}
+
 /// Compare one case's expectation with what its candidate produced.
-fn judge(case: &Case, outcome: &Report) -> CaseResult {
+fn judge(case: &Case, outcome: &Judged) -> CaseResult {
     let actual = if outcome.fatal.is_some() {
         Outcome::Fatal
     } else if outcome.diagnostics.is_empty() {

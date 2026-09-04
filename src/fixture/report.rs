@@ -10,7 +10,94 @@ use std::fmt;
 use serde::Serialize;
 
 use super::matching::Expectation;
-use crate::report::{Diagnostic, SourceInfo};
+use crate::history::HistoryDiagnostic;
+use crate::report::{Code, Diagnostic, Severity, SourceInfo};
+
+/// A diagnostic a case's candidate produced: a contract diagnostic from
+/// a mutation case, or a history diagnostic from a pending-message case.
+/// Serialized exactly as the diagnostic itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Reported {
+    Contract(Diagnostic),
+    History(HistoryDiagnostic),
+}
+
+impl Reported {
+    #[must_use]
+    pub fn code(&self) -> Code {
+        match self {
+            Self::Contract(diagnostic) => diagnostic.code,
+            Self::History(diagnostic) => diagnostic.code,
+        }
+    }
+
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        match self {
+            Self::Contract(diagnostic) => diagnostic.severity,
+            Self::History(diagnostic) => diagnostic.severity,
+        }
+    }
+
+    #[must_use]
+    pub fn line(&self) -> Option<u32> {
+        match self {
+            Self::Contract(diagnostic) => diagnostic.line,
+            Self::History(diagnostic) => diagnostic.line,
+        }
+    }
+
+    /// The path a contract diagnostic, or a script-targeted history
+    /// diagnostic, is about.
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Contract(diagnostic) => Some(&diagnostic.path),
+            Self::History(diagnostic) => match &diagnostic.target {
+                crate::history::Target::Path { path } => Some(path),
+                _ => None,
+            },
+        }
+    }
+
+    /// The commit key a history diagnostic targets.
+    #[must_use]
+    pub fn commit(&self) -> Option<&str> {
+        match self {
+            Self::Contract(_) => None,
+            Self::History(diagnostic) => match &diagnostic.target {
+                crate::history::Target::Commit { commit } => Some(commit),
+                _ => None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn rule(&self) -> Option<&str> {
+        match self {
+            Self::Contract(diagnostic) => diagnostic.rule.as_deref(),
+            Self::History(diagnostic) => diagnostic.rule.as_deref(),
+        }
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Contract(diagnostic) => &diagnostic.message,
+            Self::History(diagnostic) => &diagnostic.message,
+        }
+    }
+}
+
+impl fmt::Display for Reported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Contract(diagnostic) => diagnostic.fmt(f),
+            Self::History(diagnostic) => diagnostic.fmt(f),
+        }
+    }
+}
 
 /// The class of what a case expects and what a candidate produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -59,7 +146,7 @@ pub struct CaseResult {
     pub missing: Vec<Expectation>,
     /// Actual diagnostics no expectation covered, when that fails the
     /// case; empty under `contains` matching once the outcomes agree.
-    pub unexpected: Vec<Diagnostic>,
+    pub unexpected: Vec<Reported>,
     /// The text an expected fatal outcome must contain, when asserted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_fatal: Option<String>,

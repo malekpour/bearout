@@ -3,9 +3,9 @@
 //! Structured matching of expected diagnostics against actual ones.
 //!
 //! Expectations name fields of a diagnostic, never its rendered text: the
-//! code, and optionally the severity, path, line, side, repository rule
-//! identifier, and, as a deliberately brittle assertion, the exact
-//! message. Matching is a multiset assignment: each expectation consumes
+//! code, and optionally the severity, path, line, side, commit key,
+//! repository rule identifier, and, as a deliberately brittle assertion,
+//! the exact message. Matching is a multiset assignment: each expectation consumes
 //! at most one diagnostic and each diagnostic satisfies at most one
 //! expectation, so a repeated diagnostic cannot satisfy one expectation
 //! twice and two identical expectations need two diagnostics. The
@@ -17,6 +17,8 @@ use std::fmt;
 
 use serde::Serialize;
 
+use super::report::Reported;
+use crate::history::Target;
 use crate::report::{Code, Diagnostic, Severity, Side};
 
 /// One expected diagnostic: the fields a case asserts.
@@ -35,10 +37,43 @@ pub struct Expectation {
     pub rule: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The commit key a history diagnostic must target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 impl Expectation {
-    /// `true` when every asserted field equals the diagnostic's.
+    /// `true` when every asserted field equals the reported diagnostic's.
+    #[must_use]
+    pub fn matches_reported(&self, reported: &Reported) -> bool {
+        match reported {
+            Reported::Contract(diagnostic) => self.commit.is_none() && self.matches(diagnostic),
+            Reported::History(diagnostic) => {
+                self.side.is_none()
+                    && self.code == diagnostic.code
+                    && self
+                        .severity
+                        .is_none_or(|severity| severity == diagnostic.severity)
+                    && self.line.is_none_or(|line| Some(line) == diagnostic.line)
+                    && self
+                        .rule
+                        .as_deref()
+                        .is_none_or(|rule| Some(rule) == diagnostic.rule.as_deref())
+                    && self
+                        .message
+                        .as_deref()
+                        .is_none_or(|message| message == diagnostic.message)
+                    && self.path.as_deref().is_none_or(|path| {
+                        matches!(&diagnostic.target, Target::Path { path: actual } if actual == path)
+                    })
+                    && self.commit.as_deref().is_none_or(|commit| {
+                        matches!(&diagnostic.target, Target::Commit { commit: actual } if actual == commit)
+                    })
+            }
+        }
+    }
+
+    /// `true` when every asserted field equals the contract diagnostic's.
     #[must_use]
     pub fn matches(&self, diagnostic: &Diagnostic) -> bool {
         self.code == diagnostic.code
@@ -75,6 +110,9 @@ impl fmt::Display for Expectation {
         if let Some(side) = self.side {
             write!(f, " side={side}")?;
         }
+        if let Some(commit) = &self.commit {
+            write!(f, " commit={commit}")?;
+        }
         if let Some(path) = &self.path {
             write!(f, " path={path}")?;
         }
@@ -102,7 +140,7 @@ pub struct Assignment {
 /// Assign diagnostics to expectations, one each, maximizing the number of
 /// satisfied expectations.
 #[must_use]
-pub fn assign(expectations: &[Expectation], diagnostics: &[Diagnostic]) -> Assignment {
+pub fn assign(expectations: &[Expectation], diagnostics: &[Reported]) -> Assignment {
     // Kuhn's augmenting-path matching over the small bipartite graph of
     // (expectation, diagnostic) pairs that agree. `owner[d]` is the
     // expectation currently holding diagnostic `d`.
@@ -141,12 +179,12 @@ fn augment(
     index: usize,
     expectation: &Expectation,
     expectations: &[Expectation],
-    diagnostics: &[Diagnostic],
+    diagnostics: &[Reported],
     owner: &mut [Option<usize>],
     visited: &mut [bool],
 ) -> bool {
     for (position, diagnostic) in diagnostics.iter().enumerate() {
-        if visited[position] || !expectation.matches(diagnostic) {
+        if visited[position] || !expectation.matches_reported(diagnostic) {
             continue;
         }
         visited[position] = true;
@@ -182,11 +220,12 @@ mod tests {
             side: None,
             rule: None,
             message: None,
+            commit: None,
         }
     }
 
-    fn diagnostic(code: Code, path: &str) -> Diagnostic {
-        Diagnostic::new(code, path, "m")
+    fn diagnostic(code: Code, path: &str) -> Reported {
+        Reported::Contract(Diagnostic::new(code, path, "m"))
     }
 
     #[test]
@@ -245,6 +284,7 @@ mod tests {
             side: Some(Side::Baseline),
             rule: Some("r".to_owned()),
             message: Some("text".to_owned()),
+            commit: None,
         };
         assert!(full.matches(&actual));
         assert_eq!(
@@ -292,5 +332,118 @@ mod tests {
         };
         assert!(without_line.matches(&actual));
         assert!(!full.matches(&Diagnostic::new(Code::PolicyError, "a.md", "text")));
+        // A commit expectation never matches a contract diagnostic.
+        let commit = Expectation {
+            commit: Some("pending".to_owned()),
+            side: None,
+            path: None,
+            ..full.clone()
+        };
+        assert!(!commit.matches_reported(&Reported::Contract(actual.clone())));
+    }
+
+    #[test]
+    fn history_diagnostics_match_by_commit_or_path_target() {
+        use crate::history::HistoryDiagnostic;
+        let pending = Reported::History(
+            HistoryDiagnostic::new(
+                Target::Commit {
+                    commit: "pending".to_owned(),
+                },
+                Code::HistoryError,
+                "bad header",
+            )
+            .at_line(Some(1))
+            .with_rule(Some("commit-policy".to_owned())),
+        );
+        let range = Reported::History(HistoryDiagnostic::new(
+            Target::Range {},
+            Code::HistoryWarning,
+            "note",
+        ));
+        let script = Reported::History(HistoryDiagnostic::new(
+            Target::Path {
+                path: "bearout.star".to_owned(),
+            },
+            Code::ScriptFailure,
+            "boom",
+        ));
+        let base = Expectation {
+            code: Code::HistoryError,
+            severity: None,
+            path: None,
+            line: None,
+            side: None,
+            rule: None,
+            message: None,
+            commit: None,
+        };
+        let on_pending = Expectation {
+            commit: Some("pending".to_owned()),
+            line: Some(1),
+            rule: Some("commit-policy".to_owned()),
+            ..base.clone()
+        };
+        assert!(on_pending.matches_reported(&pending));
+        assert!(
+            base.matches_reported(&pending),
+            "an unasserted target is free"
+        );
+        assert!(
+            !Expectation {
+                commit: Some("0000".to_owned()),
+                ..base.clone()
+            }
+            .matches_reported(&pending)
+        );
+        assert!(
+            !Expectation {
+                line: Some(2),
+                ..base.clone()
+            }
+            .matches_reported(&pending)
+        );
+        assert!(
+            !Expectation {
+                side: Some(Side::Candidate),
+                ..base.clone()
+            }
+            .matches_reported(&pending),
+            "a side never matches history"
+        );
+        assert!(
+            Expectation {
+                code: Code::HistoryWarning,
+                ..base.clone()
+            }
+            .matches_reported(&range)
+        );
+        assert!(
+            !Expectation {
+                code: Code::HistoryWarning,
+                commit: Some("pending".to_owned()),
+                ..base.clone()
+            }
+            .matches_reported(&range)
+        );
+        assert!(
+            Expectation {
+                code: Code::ScriptFailure,
+                path: Some("bearout.star".to_owned()),
+                ..base.clone()
+            }
+            .matches_reported(&script)
+        );
+        assert_eq!(
+            on_pending.to_string(),
+            "B032 commit=pending line=1 rule=commit-policy"
+        );
+        assert_eq!(
+            pending.to_string(),
+            "commit pending:1:B032[commit-policy]: bad header"
+        );
+        assert_eq!(pending.commit(), Some("pending"));
+        assert_eq!(script.path(), Some("bearout.star"));
+        assert_eq!(range.code(), Code::HistoryWarning);
     }
 }

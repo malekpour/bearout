@@ -201,7 +201,7 @@ fn policy_source_name(source: &crate::report::SourceInfo) -> String {
 
 /// A policy loading, execution, or result diagnostic, targeting the
 /// script it came from.
-fn from_contract(diagnostic: Diagnostic) -> HistoryDiagnostic {
+pub(crate) fn from_contract(diagnostic: Diagnostic) -> HistoryDiagnostic {
     HistoryDiagnostic {
         target: path_target(&diagnostic.path),
         code: diagnostic.code,
@@ -273,10 +273,16 @@ fn admit(
         .with_rule(Some(rule))
 }
 
-/// Sort into the documented order, deduplicate, and settle `ok`: script
-/// diagnostics by path, then range-wide findings, then commit findings in
-/// commit order; within a target by line, code, rule, and message.
+/// Sort into the documented order, deduplicate, and settle `ok`.
 fn finish(report: &mut HistoryReport, history: &History) {
+    sort_diagnostics(&mut report.diagnostics, history);
+    report.ok = report.fatal.is_none() && report.diagnostics.is_empty();
+}
+
+/// The documented order, then deduplication: script diagnostics by path,
+/// then range-wide findings, then commit findings in commit order; within
+/// a target by line, code, rule, and message.
+pub(crate) fn sort_diagnostics(diagnostics: &mut Vec<HistoryDiagnostic>, history: &History) {
     let position = |key: &str| {
         history
             .commits
@@ -284,7 +290,7 @@ fn finish(report: &mut HistoryReport, history: &History) {
             .position(|commit| commit.key == key)
             .unwrap_or(usize::MAX)
     };
-    report.diagnostics.sort_by(|a, b| {
+    diagnostics.sort_by(|a, b| {
         let key = |d: &HistoryDiagnostic| {
             let (group, path, index) = match &d.target {
                 Target::Path { path } => (0u8, path.clone(), 0usize),
@@ -303,6 +309,5 @@ fn finish(report: &mut HistoryReport, history: &History) {
         };
         key(a).cmp(&key(b))
     });
-    report.diagnostics.dedup();
-    report.ok = report.fatal.is_none() && report.diagnostics.is_empty();
+    diagnostics.dedup();
 }
