@@ -690,3 +690,185 @@ fn reclassification_and_a_missing_manifest_show_in_the_facts() {
     assert_line(&report, "content/note-a.md:added:->resource/");
     assert_line(&report, "notes/n.md:added:->resource/65");
 }
+
+// ---- findings against either side -------------------------------------------
+
+/// A history in which `note-b` and the document `OLD.md` exist only in the
+/// baseline, `note-a` moved to another path, and `note-c` is new.
+fn moved_history() -> (Project, String) {
+    let project = Project::with_note();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[documents]\nfiles = [\"OLD.md\", \"NOTES.md\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    project.file("OLD.md", "# Old\n\nline three\n");
+    project.file("NOTES.md", "# Notes\n");
+    project.file(
+        "content/note-b.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-b\"\ntitle = \"B\"\n+++\n",
+    );
+    project.git_init();
+    let old = project.commit_all("old");
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[documents]\nfiles = [\"NOTES.md\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    project.remove("OLD.md");
+    project.remove("content/note-b.md");
+    project.remove("content/note-a.md");
+    project.file(
+        "content/moved/note-a.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-a\"\ntitle = \"A\"\n+++\n\n# A\n",
+    );
+    project.file(
+        "content/note-c.md",
+        "+++\nschema = \"example/test/note@1\"\nid = \"note-c\"\ntitle = \"C\"\n+++\n",
+    );
+    (project, old)
+}
+
+fn check_returning(body: &str) -> String {
+    format!(
+        "def c(p):\n    return [{body}]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\")\ncheck(\"c\", c)\n"
+    )
+}
+
+#[test]
+fn checks_target_either_side_explicitly() {
+    let (project, old) = moved_history();
+    let accepted: [(&str, &str); 6] = [
+        (
+            "error(\"deleted\", resource = \"note-b\", side = \"baseline\", code = \"protected-record-deleted\")",
+            "baseline:content/note-b.md:B015[protected-record-deleted]: check `c`: deleted",
+        ),
+        (
+            "error(\"removed\", path = \"OLD.md\", side = \"baseline\", line = 3)",
+            "baseline:OLD.md:3:B015: check `c`: removed",
+        ),
+        (
+            "warning(\"was here\", resource = \"note-a\", side = \"baseline\")",
+            "baseline:content/note-a.md:B016: check `c`: was here",
+        ),
+        (
+            "warning(\"is here\", resource = \"note-a\", side = \"candidate\", line = 7)",
+            "content/moved/note-a.md:7:B016: check `c`: is here",
+        ),
+        (
+            "warning(\"new\", resource = \"note-c\")",
+            "content/note-c.md:B016: check `c`: new",
+        ),
+        (
+            "warning(\"kept\", path = \"NOTES.md\", side = \"candidate\")",
+            "NOTES.md:B016: check `c`: kept",
+        ),
+    ];
+    for (body, expected) in accepted {
+        project.file(common::ENTRY, &check_returning(body));
+        let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+        assert!(report.fatal.is_none(), "{body}: {:?}", report.fatal);
+        assert_eq!(lines(&report), [expected], "{body}");
+        let json = serde_json::to_value(&report).expect("json");
+        let diagnostic = &json["diagnostics"][0];
+        if expected.starts_with("baseline:") {
+            assert_eq!(diagnostic["side"], "baseline", "{body}");
+            assert_eq!(report.diagnostics[0].side, bearout::Side::Baseline);
+        } else {
+            assert!(diagnostic.get("side").is_none(), "{body}");
+        }
+    }
+}
+
+#[test]
+fn invalid_side_targets_stay_b014() {
+    let (project, old) = moved_history();
+    let rejected: [(&str, &str); 9] = [
+        (
+            "error(\"m\", resource = \"note-b\")",
+            "check `c` finding names unknown resource `note-b`",
+        ),
+        (
+            "error(\"m\", resource = \"note-c\", side = \"baseline\")",
+            "check `c` finding names unknown baseline resource `note-c`",
+        ),
+        (
+            "error(\"m\", path = \"OLD.md\")",
+            "check `c` finding names unknown document `OLD.md`",
+        ),
+        (
+            "error(\"m\", path = \"content/note-b.md\", side = \"baseline\")",
+            "check `c` finding names unknown baseline document `content/note-b.md`",
+        ),
+        (
+            "error(\"m\", resource = \"note-a\", side = \"baseline\", line = 10)",
+            "check `c` finding line 10 is beyond the 9 line(s) of baseline `note-a`",
+        ),
+        (
+            "error(\"m\", resource = \"note-a\", side = \"candidate\", line = 8)",
+            "check `c` finding line 8 is beyond the 7 line(s) of `note-a`",
+        ),
+        (
+            "error(\"m\", resource = \"note-a\", side = \"history\")",
+            "finding side must be \"candidate\" or \"baseline\", found \"history\"",
+        ),
+        (
+            "error(\"m\", resource = \"note-a\", path = \"NOTES.md\", side = \"baseline\")",
+            "a finding names either a `resource` or a `path`, not both",
+        ),
+        (
+            "error(\"m\", side = \"baseline\")",
+            "check `c` a check finding must name a `resource` or a `path`",
+        ),
+    ];
+    for (body, expected) in rejected {
+        project.file(common::ENTRY, &check_returning(body));
+        let report = project.run(Command::Check, &options(Source::WorkingDirectory, &old));
+        assert_line(&report, expected);
+        assert!(
+            codes(&report)
+                .iter()
+                .all(|code| matches!(code, Code::ScriptResult | Code::ScriptFailure)),
+            "{body}: {:?}",
+            codes(&report)
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|d| d.side == bearout::Side::Candidate)
+        );
+    }
+
+    // Without a comparison the baseline side does not exist.
+    project.file(
+        common::ENTRY,
+        &check_returning("error(\"m\", resource = \"note-a\", side = \"baseline\")"),
+    );
+    assert_line(
+        &project.check(),
+        "check `c` a finding may name the baseline side only when a comparison baseline was given",
+    );
+
+    // Validators never reach the baseline.
+    project.file(
+        common::ENTRY,
+        "def v(r):\n    return [error(\"m\", side = \"baseline\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\", validate = v)\n",
+    );
+    assert_line(
+        &project.run(Command::Check, &options(Source::WorkingDirectory, &old)),
+        "validate a validator may only report its own candidate resource `note-a`, not the baseline",
+    );
+    project.file(
+        common::ENTRY,
+        "def v(r):\n    return [error(\"m\", resource = \"note-b\", side = \"baseline\")]\nschema(\"example/test/note@1\", shape = \"note.schema.toml\", validate = v)\n",
+    );
+    assert_line(
+        &project.run(Command::Check, &options(Source::WorkingDirectory, &old)),
+        "not the baseline",
+    );
+}

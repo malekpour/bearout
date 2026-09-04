@@ -43,8 +43,8 @@ Available in every module:
 
 | Constructor | Result |
 | --- | --- |
-| `error(message, resource=None, path=None, line=None, code=None)` | A finding that fails the run (B015). |
-| `warning(message, resource=None, path=None, line=None, code=None)` | A finding that does not fail the run (B016). |
+| `error(message, resource=None, path=None, side="candidate", line=None, code=None)` | A finding that fails the run (B015). |
+| `warning(message, resource=None, path=None, side="candidate", line=None, code=None)` | A finding that does not fail the run (B016). |
 | `output(template, path, context=None)` | One planned file: `template` relative to the templates root, `path` relative to the project root, `context` a dict. |
 
 Rules enforced at construction, inside the script, so the error names the
@@ -55,16 +55,25 @@ call site:
   `resource` are lowercase kebab-case identifiers;
 - a finding's `path` is a normalized project-relative path of a schema-less
   document; `resource` and `path` are mutually exclusive;
+- a finding's `side` is exactly `"candidate"` (the default) or
+  `"baseline"`;
 - an output's `path` and `template` are normalized relative paths;
 - `context` converts to JSON; anything else is an error.
 
 Rules enforced by the kernel when the value is admitted (B014 if violated):
 
 - a validator may omit `resource` or name its own resource only; it may
-  never name a `path`;
-- a check must name a `resource` that exists in the valid graph or a
-  `path` that exactly matches a discovered document;
-- `line` is at most the line count of the named resource or document;
+  never name a `path` or the baseline side;
+- a check must name a `resource` that exists in the valid graph of the
+  selected side or a `path` that exactly matches a parsed document of that
+  side; `side="baseline"` is valid only when the run was given a
+  comparison baseline;
+- `line` is at most the line count of the named resource or document on
+  the selected side;
+- a resource present on both sides is never targeted ambiguously: the
+  side names which tree, and therefore which path, the finding is about;
+- a finding on the baseline side is reported with the structured
+  `baseline` side (a `baseline:` prefix in text output).
 - an output path lies beneath a declared output root and does not collide
   with another output after normalization and case folding.
 
@@ -103,6 +112,30 @@ index into `sections` or `None`.
 | `by_schema` | Dict from schema id to the list of resource ids in path order. |
 | `ids` | Dict from every id, resource or fragment, to its kind: the schema id, or `schema#kind` for a fragment. |
 | `documents` | List of schema-less document views in path order; empty when the bootstrap selects no documents. |
+| `comparison` | `None` unless the run was given a comparison baseline; otherwise the comparison view below. |
+
+## Comparison view
+
+**Experimental**, like the Git-backed sources it depends on. When a run
+names a baseline revision, `project["comparison"]` is a dict:
+
+| Key | Value |
+| --- | --- |
+| `baseline` | The historical project: `revision` as supplied, `tree` (the resolved tree identity), `digest` (the deterministic digest of the captured tree), and `resources`, `by_id`, `by_schema`, `ids`, and `documents` with exactly the shapes of the candidate project view. |
+| `changes` | List of `{path, change, before, after}` in path order over the contract surface of both sides: the bootstrap, the discovered resources, and the discovered schema-less documents. `change` is `added`, `removed`, or `modified`; `before` and `after` are `None` or `{classification, digest, bytes}` with `classification` one of `resource`, `document`, `manifest`. |
+
+The candidate is the top-level project view; the comparison never replaces
+it. The baseline is projected through the candidate's policy: its own
+`bearout.toml` decided which paths it classified as resources and
+documents, the candidate's limits bound it, and the candidate's registered
+schemas and shapes validated it. Only structurally valid baseline
+resources and parsed baseline documents appear. No baseline Starlark,
+generator, or template ever runs, and nothing gives a script access to
+arbitrary historical blobs, the working filesystem, Git, or the source a
+run reads. Change facts compare exact bytes by path: a rename is a removal
+plus an addition, a reclassified path is a modification, and equal content
+yields no facts. What is protected, immutable, or permitted to change is
+entirely the repository policy's decision; the kernel enforces nothing.
 
 ## Document view
 

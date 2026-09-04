@@ -45,6 +45,9 @@ mod host_types {
         /// Project-relative path of the schema-less document the finding is
         /// about, when given. Exclusive with `resource`.
         pub path: Option<String>,
+        /// `true` when the target lives in the comparison baseline rather
+        /// than the candidate.
+        pub baseline: bool,
         /// One-based line in that resource or document, when given.
         pub line: Option<u32>,
         /// Repository-owned rule identifier, when given.
@@ -127,12 +130,22 @@ fn finding(
     message: &str,
     resource: NoneOr<&str>,
     path: NoneOr<&str>,
+    side: &str,
     line: NoneOr<i32>,
     code: NoneOr<&str>,
 ) -> starlark::Result<Finding> {
     if message.trim().is_empty() {
         return Err(fail("finding message must not be empty".to_owned()));
     }
+    let baseline = match side {
+        "candidate" => false,
+        "baseline" => true,
+        other => {
+            return Err(fail(format!(
+                "finding side must be \"candidate\" or \"baseline\", found {other:?}"
+            )));
+        }
+    };
     let resource = match resource {
         NoneOr::None => None,
         NoneOr::Other(id) => {
@@ -181,6 +194,7 @@ fn finding(
         message: message.to_owned(),
         resource,
         path,
+        baseline,
         line,
         rule,
     })
@@ -196,10 +210,11 @@ pub fn library(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named, default = NoneOr::None)] resource: NoneOr<&str>,
         #[starlark(require = named, default = NoneOr::None)] path: NoneOr<&str>,
+        #[starlark(require = named, default = "candidate")] side: &str,
         #[starlark(require = named, default = NoneOr::None)] line: NoneOr<i32>,
         #[starlark(require = named, default = NoneOr::None)] code: NoneOr<&str>,
     ) -> starlark::Result<Finding> {
-        finding(true, message, resource, path, line, code)
+        finding(true, message, resource, path, side, line, code)
     }
 
     /// Report a warning about a resource or a schema-less document.
@@ -207,10 +222,11 @@ pub fn library(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] message: &str,
         #[starlark(require = named, default = NoneOr::None)] resource: NoneOr<&str>,
         #[starlark(require = named, default = NoneOr::None)] path: NoneOr<&str>,
+        #[starlark(require = named, default = "candidate")] side: &str,
         #[starlark(require = named, default = NoneOr::None)] line: NoneOr<i32>,
         #[starlark(require = named, default = NoneOr::None)] code: NoneOr<&str>,
     ) -> starlark::Result<Finding> {
-        finding(false, message, resource, path, line, code)
+        finding(false, message, resource, path, side, line, code)
     }
 
     /// Plan one generated file: render `template` to `path` with `context`.

@@ -166,6 +166,15 @@ impl Side {
     }
 }
 
+impl fmt::Display for Side {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Candidate => "candidate",
+            Self::Baseline => "baseline",
+        })
+    }
+}
+
 /// One deterministic finding. Ordering is by side, path, code, line, rule,
 /// and message, which is also the order of the report: every candidate
 /// finding precedes every baseline finding.

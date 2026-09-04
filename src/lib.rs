@@ -371,21 +371,9 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         comparison,
     )
     .map_err(|error| format!("cannot build script views: {error}"))?;
-    let line_counts: BTreeMap<&str, u32> = valid
-        .iter()
-        .map(|resource| (resource.id.as_str(), resource.line_count))
-        .collect();
-    let paths_by_id: BTreeMap<&str, &str> = valid
-        .iter()
-        .map(|resource| (resource.id.as_str(), resource.path.as_str()))
-        .collect();
     let targets = Targets {
-        line_counts: &line_counts,
-        paths_by_id: &paths_by_id,
-        document_lines: &documents
-            .iter()
-            .map(|document| (document.path.as_str(), document.line_count))
-            .collect(),
+        candidate: SideTargets::of(&candidate),
+        baseline: historical.as_ref().map(SideTargets::of),
     };
     run_validators(&valid, &views, &policy, &targets, &mut report);
     if report.errors() == 0 {
@@ -492,17 +480,49 @@ fn load_shapes(
     shapes
 }
 
-/// What a finding may be admitted against: the structurally valid
-/// resources by id and the parsed schema-less documents by path.
+/// What a finding may be admitted against on one side: the structurally
+/// valid resources by id (path and line count) and the parsed schema-less
+/// documents by path (line count).
+struct SideTargets<'a> {
+    resources: BTreeMap<&'a str, (&'a str, u32)>,
+    documents: BTreeMap<&'a str, u32>,
+}
+
+impl<'a> SideTargets<'a> {
+    fn of(projection: &'a Projection) -> Self {
+        let resources = projection
+            .valid_indexes()
+            .into_iter()
+            .map(|index| &projection.resources[index])
+            .map(|resource| {
+                (
+                    resource.id.as_str(),
+                    (resource.path.as_str(), resource.line_count),
+                )
+            })
+            .collect();
+        let documents = projection
+            .documents
+            .iter()
+            .map(|document| (document.path.as_str(), document.line_count))
+            .collect();
+        Self {
+            resources,
+            documents,
+        }
+    }
+}
+
+/// The candidate's targets, and the baseline's when a comparison exists.
 struct Targets<'a> {
-    line_counts: &'a BTreeMap<&'a str, u32>,
-    paths_by_id: &'a BTreeMap<&'a str, &'a str>,
-    document_lines: &'a BTreeMap<&'a str, u32>,
+    candidate: SideTargets<'a>,
+    baseline: Option<SideTargets<'a>>,
 }
 
 /// Turn a finding into a diagnostic, checking its target against the ABI.
-/// A validator may report only its own resource; a check must name a known
-/// resource or a discovered document, and a line within it.
+/// A validator may report only its own candidate resource. A check must
+/// name a known resource or a discovered document on the side it selects,
+/// and a line within it; the baseline side exists only during a comparison.
 fn admit(
     finding: &Finding,
     label: &str,
@@ -510,45 +530,81 @@ fn admit(
     own_resource: Option<(&str, &str)>,
     targets: &Targets<'_>,
 ) -> Diagnostic {
+    let reject =
+        |error: String| Diagnostic::new(C::ScriptResult, script, format!("{label} {error}"));
+    let side = if finding.baseline {
+        Side::Baseline
+    } else {
+        Side::Candidate
+    };
+    // Candidate messages keep their wording; baseline targets say so.
+    let qualifier = match side {
+        Side::Candidate => "",
+        Side::Baseline => "baseline ",
+    };
+    let side_targets = match (side, &targets.baseline) {
+        (Side::Candidate, _) => &targets.candidate,
+        (Side::Baseline, Some(baseline)) => baseline,
+        (Side::Baseline, None) => {
+            return reject(
+                "a finding may name the baseline side only when a comparison baseline was given"
+                    .to_owned(),
+            );
+        }
+    };
+    let resource_target = |id: &str| {
+        side_targets
+            .resources
+            .get(id)
+            .map(|(path, count)| (*path, *count))
+            .ok_or_else(|| format!("finding names unknown {qualifier}resource `{id}`"))
+    };
     // (diagnostic path, name used in the line message, line count)
-    let target: Result<(&str, &str, u32), String> =
-        match (&finding.resource, &finding.path, own_resource) {
-            (_, Some(path), Some((own_id, _))) => Err(format!(
-                "a validator may only report its own resource `{own_id}`, not document `{path}`"
-            )),
-            (_, Some(path), None) => targets
-                .document_lines
-                .get(path.as_str())
-                .map(|count| (path.as_str(), path.as_str(), *count))
-                .ok_or_else(|| format!("finding names unknown document `{path}`")),
-            (None, None, Some((id, path))) => Ok((path, id, resource_lines(targets, id))),
-            (None, None, None) => {
-                Err("a check finding must name a `resource` or a `path`".to_owned())
-            }
-            (Some(id), None, Some((own_id, path))) if id == own_id => {
-                Ok((path, own_id, resource_lines(targets, own_id)))
-            }
-            (Some(id), None, Some((own_id, _))) => Err(format!(
-                "a validator may only report its own resource `{own_id}`, not `{id}`"
-            )),
-            (Some(id), None, None) => targets
-                .paths_by_id
-                .get(id.as_str())
-                .map(|path| (*path, id.as_str(), resource_lines(targets, id)))
-                .ok_or_else(|| format!("finding names unknown resource `{id}`")),
-        };
+    let target: Result<(&str, &str, u32), String> = match (
+        &finding.resource,
+        &finding.path,
+        own_resource,
+        side,
+    ) {
+        (_, _, Some((own_id, _)), Side::Baseline) => Err(format!(
+            "a validator may only report its own candidate resource `{own_id}`, not the baseline"
+        )),
+        (_, Some(path), Some((own_id, _)), _) => Err(format!(
+            "a validator may only report its own resource `{own_id}`, not document `{path}`"
+        )),
+        (_, Some(path), None, _) => side_targets
+            .documents
+            .get(path.as_str())
+            .map(|count| (path.as_str(), path.as_str(), *count))
+            .ok_or_else(|| format!("finding names unknown {qualifier}document `{path}`")),
+        (None, None, Some((id, path)), _) => {
+            Ok((path, id, resource_target(id).map_or(0, |(_, count)| count)))
+        }
+        (None, None, None, _) => {
+            Err("a check finding must name a `resource` or a `path`".to_owned())
+        }
+        (Some(id), None, Some((own_id, path)), _) if id == own_id => Ok((
+            path,
+            own_id,
+            resource_target(own_id).map_or(0, |(_, count)| count),
+        )),
+        (Some(id), None, Some((own_id, _)), _) => Err(format!(
+            "a validator may only report its own resource `{own_id}`, not `{id}`"
+        )),
+        (Some(id), None, None, _) => {
+            resource_target(id).map(|(path, count)| (path, id.as_str(), count))
+        }
+    };
     let (target, name, count) = match target {
         Ok(target) => target,
-        Err(error) => return Diagnostic::new(C::ScriptResult, script, format!("{label} {error}")),
+        Err(error) => return reject(error),
     };
     if let Some(line) = finding.line
         && line > count
     {
-        return Diagnostic::new(
-            C::ScriptResult,
-            script,
-            format!("{label} finding line {line} is beyond the {count} line(s) of `{name}`"),
-        );
+        return reject(format!(
+            "finding line {line} is beyond the {count} line(s) of {qualifier}`{name}`"
+        ));
     }
     let code = if finding.is_error {
         C::PolicyError
@@ -558,10 +614,7 @@ fn admit(
     Diagnostic::new(code, target, format!("{label}: {}", finding.message))
         .at_line(finding.line)
         .with_rule(finding.rule.clone())
-}
-
-fn resource_lines(targets: &Targets<'_>, id: &str) -> u32 {
-    targets.line_counts.get(id).copied().unwrap_or(0)
+        .on_side(side)
 }
 
 fn printed(outcome: &CallOutcome<impl Sized>, script: &str, label: &str) -> Vec<Diagnostic> {
