@@ -519,3 +519,182 @@ fn document_counts_appear_in_text_and_json() {
         "{stderr}"
     );
 }
+
+// ---- hygiene and formatting -------------------------------------------------
+
+fn fixture_formatter() -> String {
+    env!("CARGO_BIN_EXE_bearout-fixture-formatter").replace('\\', "/")
+}
+
+/// A project selecting `text/` with a strict `.editorconfig` and an
+/// uppercasing formatter over `src/*.txt`.
+fn hygiene_project() -> Project {
+    let project = Project::with_note();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"text\", \"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{}\", \"upper\"]\npaths = [\"src\"]\nextensions = [\"txt\"]\n",
+            common::BOOTSTRAP,
+            fixture_formatter()
+        ),
+    );
+    project.file(".editorconfig", "root = true\n\n[*]\nend_of_line = lf\ninsert_final_newline = true\ntrim_trailing_whitespace = true\n");
+    project.file("text/messy.txt", "a  \r\n");
+    project.file("src/lower.txt", "lower\n");
+    project
+}
+
+#[test]
+fn hygiene_exit_codes_and_json_cover_every_outcome() {
+    let project = hygiene_project();
+    let path = project.path().to_str().expect("utf-8 path");
+
+    // Differences: exit 1, with the codes in JSON.
+    let (code, stdout, _) = bearout(&["--format", "json", "--allow-formatters", "check", path]);
+    assert_eq!(code, 1);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    let codes: Vec<&str> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["B029", "B026", "B028"]);
+    assert_eq!(json["files"], 2);
+    let (code, _, stderr) = bearout(&["--allow-formatters", "check", path]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("text/messy.txt:1:B026"), "{stderr}");
+    assert!(
+        stderr.contains("checked 1 resource(s): 3 error(s)"),
+        "{stderr}"
+    );
+
+    // Unauthorized formatters and a missing executable: exit 2, JSON valid.
+    let (code, stdout, _) = bearout(&["--format", "json", "check", path]);
+    assert_eq!(code, 2);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert!(
+        json["fatal"]
+            .as_str()
+            .unwrap()
+            .contains("--allow-formatters")
+    );
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"src\"]\n\n[[formatters]]\nname = \"gone\"\ncommand = [\"bearout-no-such-executable\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    let (code, stdout, _) = bearout(&["--format", "json", "--allow-formatters", "check", path]);
+    assert_eq!(code, 2);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert!(json["fatal"].as_str().unwrap().contains("cannot start"));
+    // A malformed hygiene declaration: exit 2.
+    project.file(
+        "bearout.toml",
+        &format!("{}\n[hygiene]\nscope = \"everything\"\n", common::BOOTSTRAP),
+    );
+    let (code, _, stderr) = bearout(&["check", path]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("hygiene.scope"), "{stderr}");
+    // A repository-wide selection outside Git: exit 2.
+    project.file(
+        "bearout.toml",
+        &format!("{}\n[hygiene]\nscope = \"repository\"\n", common::BOOTSTRAP),
+    );
+    let (code, _, stderr) = bearout(&["check", path]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("needs the project inside a Git repository"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn format_writes_then_checks_clean_and_reports_in_text_and_json() {
+    let project = hygiene_project();
+    let path = project.path().to_str().expect("utf-8 path");
+    let (code, _, stderr) = bearout(&["format", path]);
+    assert_eq!(code, 2, "formatters need authorization for writes too");
+    assert!(stderr.contains("--allow-formatters"));
+    assert_eq!(project.read("text/messy.txt"), "a  \r\n");
+
+    let (code, stdout, stderr) = bearout(&["--allow-formatters", "format", path]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "formatted src/lower.txt\nformatted text/messy.txt\nformatted 2 of 2 selected file(s)\n"
+    );
+    assert_eq!(project.read("text/messy.txt"), "a\n");
+    assert_eq!(project.read("src/lower.txt"), "LOWER\n");
+    let (code, stdout, _) = bearout(&["--allow-formatters", "check", path]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("checked 1 resource(s): clean"));
+    let (code, stdout, _) = bearout(&["--format", "json", "--allow-formatters", "format", path]);
+    assert_eq!(code, 0);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(json["formatted"], serde_json::json!([]));
+    assert_eq!(json["ok"], true);
+
+    // A format that cannot rewrite a file: exit 1 with B031/B030 and valid JSON.
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[hygiene]\nscope = \"declared\"\nroots = [\"src\"]\n\n[[formatters]]\nname = \"fixture\"\ncommand = [\"{}\", \"fail\"]\nextensions = [\"txt\"]\n",
+            common::BOOTSTRAP,
+            fixture_formatter()
+        ),
+    );
+    let (code, stdout, stderr) =
+        bearout(&["--format", "json", "--allow-formatters", "format", path]);
+    assert_eq!(code, 1, "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(json["diagnostics"][0]["code"], "B030");
+    let (code, _, _) = bearout(&["--allow-formatters", "format", "--index", path]);
+    assert_eq!(code, 2, "format takes no source flags");
+    let (code, stdout, _) = bearout(&["format", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Working directory only"));
+    let (code, stdout, _) = bearout(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--allow-formatters"));
+}
+
+#[test]
+fn formatter_working_directories_leave_no_trace() {
+    let project = hygiene_project();
+    let path = project.path().to_str().expect("utf-8 path");
+    let leftovers = |pid: u32| {
+        std::fs::read_dir(std::env::temp_dir())
+            .expect("temp dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("bearout-format-{pid}-"))
+            })
+            .count()
+    };
+    for args in [
+        vec!["--allow-formatters", "check", path],
+        vec!["--allow-formatters", "format", path],
+    ] {
+        let child = Command::new(env!("CARGO_BIN_EXE_bearout"))
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn bearout");
+        let pid = child.id();
+        let status = child.wait_with_output().expect("wait").status;
+        assert!(status.code().is_some_and(|code| code < 2), "{args:?}");
+        assert_eq!(
+            leftovers(pid),
+            0,
+            "{args:?} left a working directory behind"
+        );
+    }
+    assert!(!project.path().join(".fixture-cache").exists());
+}
