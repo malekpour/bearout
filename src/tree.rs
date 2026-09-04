@@ -23,7 +23,8 @@
 //! - `read`, `read_text`, `file_len`, `is_file`, `is_dir`, and `exists`
 //!   follow symbolic links, but only inside the tree; a link that leaves it
 //!   is an error, never a read of something outside;
-//! - `walk` never follows or reports symbolic links, never descends into a
+//! - `walk` never follows or reports symbolic links, refuses a directory
+//!   that is or lies beneath a symbolic link, never descends into a
 //!   submodule, and fails on a name that is not a portable project path;
 //! - `symlink_component` inspects the path literally, without following.
 
@@ -62,9 +63,10 @@ pub trait ReadTree: Send + Sync {
     fn symlink_component(&self, path: &ProjectPath) -> io::Result<Option<ProjectPath>>;
 
     /// Every regular file beneath `directory`, sorted, without following
-    /// symbolic links or entering submodules. An entry whose name is not
-    /// valid UTF-8 or not a portable project path segment is an error,
-    /// never silently skipped.
+    /// symbolic links or entering submodules. A `directory` that is or lies
+    /// beneath a symbolic link is refused, so a linked root exposes
+    /// nothing. An entry whose name is not valid UTF-8 or not a portable
+    /// project path segment is an error, never silently skipped.
     fn walk(&self, directory: &ProjectPath) -> io::Result<Vec<ProjectPath>>;
 
     /// A tree rooted at `directory`. Paths are then relative to that

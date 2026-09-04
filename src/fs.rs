@@ -128,6 +128,9 @@ impl ReadTree for WorkingDir {
     }
 
     fn walk(&self, directory: &ProjectPath) -> io::Result<Vec<ProjectPath>> {
+        if let Some(link) = self.symlink_component(directory)? {
+            return Err(linked_directory(&link));
+        }
         let mut found = Vec::new();
         self.walk_into(directory, &mut found)?;
         found.sort();
@@ -142,6 +145,14 @@ impl ReadTree for WorkingDir {
         };
         Ok(Arc::new(Self { dir }))
     }
+}
+
+/// The error for walking a directory reached through a symbolic link.
+pub fn linked_directory(link: &ProjectPath) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("`{link}` is a symbolic link; directories are never walked through links"),
+    )
 }
 
 impl Writer<'_> {

@@ -215,17 +215,89 @@ fn documents_are_never_reached_through_symbolic_links() {
         &bootstrap("files = [\"docs/linked-dir/leaked.md\"]"),
     );
     assert_fatal(&project.check(), "symbolic link `docs/linked-dir`");
-    // A root that is itself a link is refused as a directory of the project.
+    // A root that is itself a link is refused, whether it points outside
+    // or inside the project, and so is a resource root.
     std::os::unix::fs::symlink(
         outside.path().join("tree"),
         project.path().join("linked-root"),
     )
     .expect("symlink");
     project.file("bearout.toml", &bootstrap("roots = [\"linked-root\"]"));
-    let report = project.check();
-    assert!(
-        report.fatal.is_some() || report.documents == 0,
-        "a linked root exposes nothing: {report:?}"
+    // Outside the capability the link cannot even be seen as a directory.
+    assert_fatal(
+        &project.check(),
+        "document root `linked-root` is not a directory inside the project",
+    );
+    fs::rename(
+        project.path().join("docs"),
+        project.path().join("actual-docs"),
+    )
+    .expect("rename");
+    std::os::unix::fs::symlink("actual-docs", project.path().join("docs")).expect("symlink");
+    project.file("bearout.toml", &bootstrap("roots = [\"docs\"]"));
+    assert_fatal(
+        &project.check(),
+        "cannot walk document root `docs`: `docs` is a symbolic link",
+    );
+    project.file("bearout.toml", &bootstrap("roots = [\"docs/deeper\"]"));
+    assert_fatal(&project.check(), "`docs` is a symbolic link");
+    fs::rename(
+        project.path().join("content"),
+        project.path().join("actual-content"),
+    )
+    .expect("rename");
+    std::os::unix::fs::symlink("actual-content", project.path().join("content")).expect("symlink");
+    project.file("bearout.toml", common::BOOTSTRAP);
+    assert_fatal(
+        &project.check(),
+        "cannot walk resource root `content`: `content` is a symbolic link",
+    );
+}
+
+#[test]
+fn linked_roots_are_refused_in_git_trees() {
+    let project = documented_project();
+    project.git_init();
+    project.commit_all("clean");
+    // Replace the `docs` directory with a link to a copy of it, in the
+    // index only; the working directory keeps the real directory.
+    for (from, to) in [
+        ("docs/guide.md", "actual-docs/guide.md"),
+        ("docs/deeper/notes.md", "actual-docs/deeper/notes.md"),
+    ] {
+        let object = project.git(&["rev-parse", &format!("HEAD:{from}")]);
+        project.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{object},{to}"),
+        ]);
+    }
+    project.git(&["rm", "-r", "-q", "--cached", "docs"]);
+    project.stage_entry("120000", b"actual-docs", "docs");
+    assert_clean(&project.check());
+    assert_fatal(
+        &project.check_from(Source::Index),
+        "cannot walk document root `docs`: `docs` is a symbolic link; directories are never walked through links",
+    );
+    project.git(&["commit", "-q", "-m", "linked docs"]);
+    assert_fatal(
+        &project.check_from(Source::Revision("HEAD".to_owned())),
+        "cannot walk document root `docs`: `docs` is a symbolic link",
+    );
+    // The same for a resource root.
+    let object = project.git(&["rev-parse", "HEAD:content/note-a.md"]);
+    project.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{object},actual-content/note-a.md"),
+    ]);
+    project.git(&["rm", "-r", "-q", "--cached", "content"]);
+    project.stage_entry("120000", b"actual-content", "content");
+    assert_fatal(
+        &project.check_from(Source::Index),
+        "cannot walk resource root `content`: `content` is a symbolic link",
     );
 }
 

@@ -1399,6 +1399,9 @@ impl ReadTree for GitTree {
     }
 
     fn walk(&self, directory: &ProjectPath) -> io::Result<Vec<ProjectPath>> {
+        if let Some(link) = self.symlink_component(directory)? {
+            return Err(crate::fs::linked_directory(&link));
+        }
         let Some((resolved, entry)) = self.resolve(directory)? else {
             return Err(not_found(directory));
         };
@@ -1839,7 +1842,7 @@ mod repository_tests {
     }
 
     #[test]
-    fn walking_skips_links_and_gitlinks_and_maps_through_a_linked_root() {
+    fn walking_skips_links_and_gitlinks_and_refuses_a_linked_root() {
         let repo = planted();
         let tree = GitTree::index(repo.root()).unwrap();
         let found: Vec<String> = tree
@@ -1849,13 +1852,17 @@ mod repository_tests {
             .map(|p| p.as_str().to_owned())
             .collect();
         assert_eq!(found, ["docs/a.md", "docs/run.sh", "docs/sub/deep.md"]);
-        let through_link: Vec<String> = tree
-            .walk(&path("docs/to-dir"))
-            .unwrap()
-            .iter()
-            .map(|p| p.as_str().to_owned())
-            .collect();
-        assert_eq!(through_link, ["docs/to-dir/deep.md"]);
+        let through_link = tree.walk(&path("docs/to-dir")).unwrap_err();
+        assert_eq!(
+            through_link.to_string(),
+            "`docs/to-dir` is a symbolic link; directories are never walked through links"
+        );
+        let beneath_link = tree.walk(&path("docs/to-dir/sub")).unwrap_err();
+        assert!(
+            beneath_link
+                .to_string()
+                .contains("`docs/to-dir` is a symbolic link")
+        );
         assert_eq!(
             tree.walk(&path("docs/missing")).unwrap_err().kind(),
             io::ErrorKind::NotFound
