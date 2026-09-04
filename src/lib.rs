@@ -32,6 +32,7 @@ mod identity;
 mod markdown;
 mod paths;
 mod policy;
+mod references;
 pub mod report;
 mod shape;
 mod tree;
@@ -269,8 +270,8 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     // Phase: parsing.
     let mut parsed = parse_all(tree, &bootstrap, &files, &mut report);
     let documents = read_documents(tree, &bootstrap, &document_paths, &mut report);
-    // Later phases index and expose the documents; until then only their
-    // count and their read diagnostics are observable.
+    // Repository policy receives the document views in the next phase; until
+    // then the view is built only to keep the model exercised.
     let _ = documents.iter().map(document::Document::view).count();
 
     // Repository policy is loaded before structural validation because the
@@ -289,14 +290,25 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     validate_structure(&mut parsed, &policy, &shapes, &mut report);
 
     // Phase: graph construction. Every parsed resource defines identifiers;
-    // only structurally valid ones have their relations and links checked.
+    // only structurally valid ones have their relations checked. Markdown
+    // references of valid resources and parsed documents are checked
+    // together against the tree and the discovered Markdown set.
     let resources: Vec<Resource> = parsed
         .iter_mut()
         .map(|entry| std::mem::replace(&mut entry.resource, placeholder()))
         .collect();
     let validity: Vec<bool> = parsed.iter().map(|entry| entry.valid).collect();
     let mut graph_diagnostics = Vec::new();
-    let graph = graph::build(tree, &resources, &validity, &shapes, &mut graph_diagnostics);
+    let graph = graph::build(&resources, &validity, &shapes, &mut graph_diagnostics);
+    references::check(
+        tree,
+        &resources,
+        &validity,
+        &files,
+        &documents,
+        &document_paths,
+        &mut graph_diagnostics,
+    );
     report.extend(graph_diagnostics);
     let valid_indexes: Vec<usize> = validity
         .iter()
