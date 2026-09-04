@@ -635,6 +635,9 @@ fn linked_worktrees_have_their_own_index_and_head() {
     assert_clean(&run(revision("HEAD")));
 }
 
+/// Git for Windows refuses to record a name with `:` or `\\` at all, so
+/// only a Unix repository can hold one.
+#[cfg(unix)]
 #[test]
 fn non_portable_index_paths_fail_deterministically() {
     let (project, _) = committed_project("");

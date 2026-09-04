@@ -7,6 +7,8 @@ and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-04
+
 ### Added
 
 - Experimental Git-backed sources. `bearout check` and

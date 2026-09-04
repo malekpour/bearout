@@ -46,8 +46,9 @@ jobs:
           install_args: rust
 
       # Path normalization, report rendering, sample freshness, and staged
-      # delivery are covered by the test suite on every platform.
-      - run: mise exec -- cargo test --locked --all-targets --all-features
+      # delivery are covered by the test suite on every platform. Every
+      # test binary runs so one job reports every platform failure at once.
+      - run: mise exec -- cargo test --locked --all-targets --all-features --no-fail-fast
 
       - run: mise exec -- cargo test --locked --manifest-path samples/formula-language/formulo/Cargo.toml
         env:

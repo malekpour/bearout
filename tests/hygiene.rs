@@ -234,11 +234,15 @@ fn file_limits_and_non_portable_names_fail_closed() {
     assert_fatal(&project.check(), "selected files exceed `limits.files` = 3");
     project.file("bearout.toml", &hygiene_bootstrap("scope = \"repository\""));
     project.commit_all("base");
-    project.stage_entry("100644", b"x", "notes/a:b.txt");
-    assert_fatal(
-        &project.check_from(Source::Index),
-        "contains an entry that is not a portable path segment",
-    );
+    // Git for Windows refuses to record such a name at all.
+    #[cfg(unix)]
+    {
+        project.stage_entry("100644", b"x", "notes/a:b.txt");
+        assert_fatal(
+            &project.check_from(Source::Index),
+            "contains an entry that is not a portable path segment",
+        );
+    }
 }
 
 #[test]
