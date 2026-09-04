@@ -698,3 +698,178 @@ fn formatter_working_directories_leave_no_trace() {
     }
     assert!(!project.path().join(".fixture-cache").exists());
 }
+
+// ---- contract fixtures --------------------------------------------------
+
+/// A committed note project declaring one fixture file with a passing
+/// case, a failing case, and a fatal-expecting case.
+fn fixture_project() -> Project {
+    let project = Project::with_note();
+    project.file(
+        "bearout.toml",
+        &format!(
+            "{}\n[fixtures]\nfiles = [\"contract-tests/notes.test.toml\"]\n",
+            common::BOOTSTRAP
+        ),
+    );
+    project.file(
+        common::ENTRY,
+        "def v(r):\n    if r[\"fields\"][\"title\"] == \"BAD\":\n        return [error(\"title is BAD\", code = \"bad-title\")]\n    return []\nschema(\"example/test/note@1\", shape = \"note.schema.toml\", validate = v)\n",
+    );
+    project.file(
+        "contract-tests/notes.test.toml",
+        "[[cases]]\nname = \"a good note is clean\"\nexpect = \"clean\"\n[[cases.mutations]]\nwrite = \"content/note-b.md\"\ncontent = \"+++\\nschema = \\\"example/test/note@1\\\"\\nid = \\\"note-b\\\"\\ntitle = \\\"B\\\"\\n+++\\n\"\n\n[[cases]]\nname = \"a bad note is reported\"\nexpect = \"diagnostics\"\n[[cases.mutations]]\nwrite = \"content/note-b.md\"\ncontent = \"+++\\nschema = \\\"example/test/note@1\\\"\\nid = \\\"note-b\\\"\\ntitle = \\\"BAD\\\"\\n+++\\n\"\n[[cases.diagnostics]]\ncode = \"B015\"\npath = \"content/note-b.md\"\nrule = \"bad-title\"\n\n[[cases]]\nname = \"no entry module is fatal\"\nexpect = \"fatal\"\nfatal = \"entry module\"\n[[cases.mutations]]\ndelete = \"bearout.star\"\n",
+    );
+    project.git_init();
+    project.commit_all("fixtures");
+    project
+}
+
+#[test]
+fn test_exit_codes_and_output_cover_every_outcome() {
+    let project = fixture_project();
+    let path = project.path().to_str().expect("utf-8 path");
+
+    // Every case passes: 0, one line per case, the summary on stdout.
+    let (code, stdout, stderr) = bearout(&["test", path]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "ok   a good note is clean (contract-tests/notes.test.toml)\nok   a bad note is reported (contract-tests/notes.test.toml)\nok   no entry module is fatal (contract-tests/notes.test.toml)\ntested 3 case(s): 3 passed, 0 failed\n"
+    );
+    assert!(stderr.is_empty());
+    let again = bearout(&["test", path]);
+    assert_eq!((code, stdout.clone(), stderr), again, "byte-identical text");
+    let (code, json_first, _) = bearout(&["--format", "json", "test", path]);
+    assert_eq!(code, 0);
+    let json: serde_json::Value = serde_json::from_str(&json_first).expect("valid json");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["total"], 3);
+    assert_eq!(json["passed"], 3);
+    assert_eq!(json["failed"], 0);
+    assert_eq!(json["cases"][1]["name"], "a bad note is reported");
+    assert_eq!(json["cases"][1]["expected"], "diagnostics");
+    assert_eq!(json["cases"][1]["actual"], "diagnostics");
+    assert_eq!(
+        json["cases"][2]["fatal"]
+            .as_str()
+            .map(|m| m.contains("entry module")),
+        Some(true)
+    );
+    assert!(json.get("source").is_none());
+    assert_eq!(
+        json_first,
+        bearout(&["--format", "json", "test", path]).1,
+        "byte-identical json"
+    );
+
+    // The same suite from the index and a revision, with source identity.
+    for args in [
+        vec!["test", "--index", path],
+        vec!["test", "--revision", "HEAD", path],
+    ] {
+        let (code, _, stderr) = bearout(&args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+    }
+    let (_, stdout, _) = bearout(&["--format", "json", "test", "--revision", "main", path]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(json["source"]["kind"], "revision");
+    assert_eq!(json["source"]["revision"], "main");
+    let (_, stdout, _) = bearout(&["--format", "json", "test", "--index", path]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(json["source"]["kind"], "index");
+
+    // A failed case: 1, its details beneath it, the summary on stderr.
+    project.file(
+        "contract-tests/notes.test.toml",
+        &project
+            .read("contract-tests/notes.test.toml")
+            .replace("name = \"a good note is clean\"\nexpect = \"clean\"", "name = \"a good note is clean\"\nexpect = \"diagnostics\"\n[[cases.diagnostics]]\ncode = \"B015\"\nrule = \"bad-title\""),
+    );
+    let (code, stdout, stderr) = bearout(&["test", path]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        stdout,
+        "FAIL a good note is clean (contract-tests/notes.test.toml)\n     expected diagnostics, got clean\n     missing: B015 rule=bad-title\nok   a bad note is reported (contract-tests/notes.test.toml)\nok   no entry module is fatal (contract-tests/notes.test.toml)\n"
+    );
+    assert_eq!(stderr, "tested 3 case(s): 2 passed, 1 failed\n");
+    let (code, stdout, _) = bearout(&["--format", "json", "test", path]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(code, 1);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["failed"], 1);
+    assert_eq!(json["cases"][0]["passed"], false);
+    assert_eq!(json["cases"][0]["missing"][0]["code"], "B015");
+    assert!(json["fatal"].is_null());
+    // The committed suite still passes from the index and HEAD.
+    assert_eq!(bearout(&["test", "--index", path]).0, 0);
+
+    // A malformed suite: 2, only the reason, valid JSON with no cases.
+    project.file("contract-tests/notes.test.toml", "[[cases]\n");
+    let (code, stdout, stderr) = bearout(&["test", path]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(
+        stderr
+            .starts_with("bearout: fixture file `contract-tests/notes.test.toml`: not valid TOML"),
+        "{stderr}"
+    );
+    let (code, stdout, _) = bearout(&["--format", "json", "test", path]);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json on fatal");
+    assert_eq!(code, 2);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["total"], 0);
+    assert!(json["cases"].as_array().unwrap().is_empty());
+    assert!(json["fatal"].as_str().unwrap().contains("not valid TOML"));
+
+    // No grant, no source, and unexpected diagnostics under exact matching.
+    project.file("bearout.toml", common::BOOTSTRAP);
+    let (code, _, stderr) = bearout(&["test", path]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("declares no `[fixtures]`"));
+    let (code, _, stderr) = bearout(&["test", "--revision", "nope", path]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("`nope` is not a revision"));
+    let empty = tempfile::tempdir().expect("dir");
+    let (code, stdout, _) = bearout(&[
+        "--format",
+        "json",
+        "test",
+        empty.path().to_str().expect("path"),
+    ]);
+    assert_eq!(code, 2);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert!(json["fatal"].as_str().unwrap().contains("bearout.toml"));
+}
+
+#[test]
+fn test_takes_no_baseline_and_documents_itself() {
+    let project = fixture_project();
+    let path = project.path().to_str().expect("utf-8 path");
+    let (code, _, stderr) = bearout(&["test", "--baseline", "HEAD", path]);
+    assert_eq!(code, 2, "an unknown flag is an invocation error");
+    assert!(stderr.contains("--baseline"));
+    let (code, _, _) = bearout(&["test", "--index", "--revision", "HEAD", path]);
+    assert_eq!(code, 2, "conflicting source flags");
+    let (code, stdout, _) = bearout(&["test", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--index"));
+    assert!(stdout.contains("--revision <REV>"));
+    assert!(stdout.contains("[fixtures]"));
+    assert!(stdout.contains("Read-only"));
+    assert!(!stdout.contains("--baseline"));
+    let (code, stdout, _) = bearout(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("test"));
+    // The working directory is untouched by a run, whatever the outcome.
+    let before = std::fs::read(project.path().join("content/note-a.md")).unwrap();
+    assert!(!project.path().join("content/note-b.md").exists());
+    bearout(&["test", path]);
+    assert_eq!(
+        std::fs::read(project.path().join("content/note-a.md")).unwrap(),
+        before
+    );
+    assert!(!project.path().join("content/note-b.md").exists());
+    assert!(project.path().join("bearout.star").exists());
+    assert_eq!(project.git(&["status", "--porcelain"]), "");
+}
