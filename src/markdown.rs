@@ -224,41 +224,85 @@ pub fn parse(body: &str, first_line: u32) -> Document {
     }
 }
 
-/// The `id` and `name` attribute values of every `<a>` element in a raw
-/// HTML literal, each with the number of line breaks before it. Attribute
-/// names are matched case-insensitively in any order; values may be
-/// double-quoted, single-quoted, or unquoted. This is a scanner for one
-/// element, not an HTML parser.
+/// The `id` and `name` attribute values of every `<a>` start tag in a raw
+/// HTML literal, each with the number of line breaks before it. Comments,
+/// CDATA sections, processing instructions, declarations, and the raw text
+/// of `<script>` and `<style>` elements are skipped, so nothing inside them
+/// can define an anchor; a `>` inside a quoted attribute value does not end
+/// the tag. Attribute names are matched case-insensitively in any order;
+/// values may be double-quoted, single-quoted, or unquoted. This is a
+/// scanner for one element, not an HTML parser.
 fn explicit_anchors(html: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
     let bytes = html.as_bytes();
-    // ASCII lowercasing preserves byte offsets, so positions found in the
-    // lowered copy index the original text.
-    let lowered = html.to_ascii_lowercase();
     let mut index = 0;
-    while let Some(start) = lowered[index..].find("<a").map(|at| at + index) {
-        let after = start + 2;
-        let is_tag = bytes
-            .get(after)
-            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/');
-        index = after;
-        if !is_tag {
-            continue;
-        }
-        let Some(end) = html[after..].find('>').map(|at| at + after) else {
-            break;
+    while let Some(at) = bytes[index..].iter().position(|b| *b == b'<') {
+        let start = index + at;
+        // `<` is ASCII, so every position found is a character boundary.
+        let rest = &html[start..];
+        let skip_to = |marker: &str, width: usize| {
+            rest.find(marker)
+                .map_or(html.len(), |found| start + found + width)
         };
-        let offset = html[..start].matches('\n').count();
-        for (name, value) in attributes(&html[after..end]) {
-            if (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("name"))
-                && !value.is_empty()
-            {
-                found.push((offset, value));
+        let lowered = rest
+            .get(..rest.len().min(9))
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if rest.starts_with("<!--") {
+            index = skip_to("-->", 3).max(start + 4);
+        } else if rest.starts_with("<![CDATA[") {
+            index = skip_to("]]>", 3);
+        } else if rest.starts_with("<?") {
+            index = skip_to("?>", 2);
+        } else if rest.starts_with("<!") {
+            index = skip_to(">", 1);
+        } else if lowered.starts_with("<script") || lowered.starts_with("<style") {
+            let closing = if lowered.starts_with("<script") {
+                "</script"
+            } else {
+                "</style"
+            };
+            index = rest
+                .to_ascii_lowercase()
+                .find(closing)
+                .map_or(html.len(), |found| start + found + closing.len());
+        } else if lowered.starts_with("<a")
+            && bytes
+                .get(start + 2)
+                .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+        {
+            let Some(end) = tag_end(&rest[2..]) else {
+                break;
+            };
+            let offset = html[..start].matches('\n').count();
+            for (name, value) in attributes(&rest[2..2 + end]) {
+                if (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("name"))
+                    && !value.is_empty()
+                {
+                    found.push((offset, value));
+                }
             }
+            index = start + 2 + end + 1;
+        } else {
+            index = start + 1;
         }
-        index = end + 1;
     }
     found
+}
+
+/// The byte offset of the `>` that ends a start tag's attribute text,
+/// ignoring any `>` inside a quoted value.
+fn tag_end(text: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (offset, c) in text.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(open), c) if c == open => quote = None,
+            (None, '>') => return Some(offset),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `name=value` pairs of one start tag's attribute text.
@@ -402,6 +446,52 @@ mod tests {
             [(1, "y".to_owned())]
         );
         assert_eq!(explicit_anchors("<a id=\"unterminated"), []);
+        assert_eq!(explicit_anchors("<A ID=UP>"), [(0, "UP".to_owned())]);
+    }
+
+    #[test]
+    fn non_element_contexts_never_define_anchors() {
+        assert_eq!(explicit_anchors("<!-- <a id=\"ghost\"></a> -->"), []);
+        assert_eq!(
+            explicit_anchors("<!-- x -->\n<a id=\"real\"></a>"),
+            [(1, "real".to_owned())]
+        );
+        assert_eq!(explicit_anchors("<!-- unterminated <a id=\"ghost\">"), []);
+        assert_eq!(explicit_anchors("<![CDATA[ <a id=\"ghost\"> ]]>"), []);
+        assert_eq!(explicit_anchors("<?php echo '<a id=\"ghost\">'; ?>"), []);
+        assert_eq!(
+            explicit_anchors("<!DOCTYPE html><a id=\"real\">"),
+            [(0, "real".to_owned())]
+        );
+        assert_eq!(
+            explicit_anchors("<script>var s = '<a id=\"ghost\">';</script><a id=\"real\">"),
+            [(0, "real".to_owned())]
+        );
+        assert_eq!(
+            explicit_anchors("<STYLE>/* <a id=\"ghost\"> */</STYLE>"),
+            []
+        );
+        // A quoted `>` does not end the tag, and the scan resumes after it.
+        assert_eq!(
+            explicit_anchors("<a id=\"x>y\" title='>'></a> <a id=\"z\">"),
+            [(0, "x>y".to_owned()), (0, "z".to_owned())]
+        );
+        assert_eq!(
+            explicit_anchors("<a title=\"a>b\" id=c>"),
+            [(0, "c".to_owned())]
+        );
+    }
+
+    #[test]
+    fn commented_anchors_do_not_satisfy_fragments() {
+        let doc = parse(
+            "<!-- <a id=\"ghost\"></a> -->\n\n<a id=\"real\"></a>\n\n[g](#ghost) [r](#real)\n",
+            1,
+        );
+        assert!(!doc.has_anchor("ghost"));
+        assert!(doc.has_anchor("real"));
+        assert_eq!(doc.anchors.len(), 1);
+        assert_eq!(doc.anchors[0].line, 3);
     }
 
     #[test]

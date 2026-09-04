@@ -241,3 +241,22 @@ fn documents_with_a_bom_and_crlf_report_correct_lines() {
         ]
     );
 }
+
+#[test]
+fn commented_out_anchors_are_not_targets() {
+    let project = project();
+    project.file(
+        "docs/guide.md",
+        "# Guide\n\n<!-- <a id=\"ghost\"></a> -->\n\n<a id=\"real\"></a>\n",
+    );
+    project.file(
+        "README.md",
+        "# Read me\n\n[ghost](docs/guide.md#ghost)\n[real](docs/guide.md#real)\n",
+    );
+    assert_eq!(
+        lines(&project.check()),
+        [
+            "README.md:3:B011: link `docs/guide.md#ghost` names anchor `ghost`, which `docs/guide.md` does not define"
+        ]
+    );
+}
