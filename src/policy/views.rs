@@ -16,11 +16,32 @@ use crate::envelope::Resource;
 use crate::graph::Graph;
 use crate::report::SourceInfo;
 
+/// How a baseline is identified inside the comparison view: the revision
+/// name as supplied, the resolved tree, and the captured digest, each
+/// `None` when the baseline has no such identity (an unmodified working
+/// directory serving as a fixture baseline has none).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BaselineIdentity {
+    pub revision: Option<String>,
+    pub tree: Option<String>,
+    pub digest: Option<String>,
+}
+
+impl From<&SourceInfo> for BaselineIdentity {
+    fn from(info: &SourceInfo) -> Self {
+        Self {
+            revision: info.revision.clone(),
+            tree: info.tree.clone(),
+            digest: Some(info.digest.clone()),
+        }
+    }
+}
+
 /// One side's inputs to the views: its structurally valid resources (by
 /// position in `resources` and in `graph`), its graph, and its parsed
-/// documents. `info` identifies a baseline; the candidate has none here.
+/// documents. `identity` identifies a baseline; the candidate has none.
 pub struct SideView<'a> {
-    pub info: Option<&'a SourceInfo>,
+    pub identity: Option<&'a BaselineIdentity>,
     pub resources: &'a [Resource],
     pub indexes: Vec<usize>,
     pub graph: &'a Graph,
@@ -63,15 +84,15 @@ impl Views {
         candidate_json["comparison"] = match comparison {
             None => Value::Null,
             Some((baseline, changes)) => {
-                let info = baseline.info.expect("a baseline carries its identity");
+                let identity = baseline.identity.expect("a baseline carries its identity");
                 let mut view = project_json(
                     &baseline.resource_json(),
                     &baseline.document_json(),
                     baseline.graph,
                 );
-                view["revision"] = json!(info.revision);
-                view["tree"] = json!(info.tree);
-                view["digest"] = json!(info.digest);
+                view["revision"] = json!(identity.revision);
+                view["tree"] = json!(identity.tree);
+                view["digest"] = json!(identity.digest);
                 let changes: Vec<Value> = changes.iter().map(Change::view).collect();
                 json!({ "baseline": view, "changes": changes })
             }

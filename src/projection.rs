@@ -155,19 +155,20 @@ pub fn settle(
 }
 
 /// Project the comparison baseline. Its bootstrap, when present, is parsed
-/// as passive historical data that only selects paths; a revision without
-/// a bootstrap is an empty historical project. The candidate's limits,
+/// as passive historical data that only selects paths; a tree without a
+/// bootstrap is an empty historical project. The candidate's limits,
 /// policy, and shapes apply. Every diagnostic is tagged with the baseline
-/// side; a discovery failure is fatal and names the baseline.
+/// side; a discovery failure is fatal and names the baseline by `label`,
+/// the revision name as supplied or, for a fixture, the unmodified source.
 pub fn baseline(
     tree: &dyn ReadTree,
-    revision: &str,
+    label: &str,
     limits: &Limits,
     policy: &Policy,
     shapes: &BTreeMap<String, Shape>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Projection, String> {
-    let fatal = |message: String| format!("baseline `{revision}`: {message}");
+    let fatal = |message: String| format!("baseline `{label}`: {message}");
     let manifest_path = ProjectPath::parse(MANIFEST_NAME).expect("constant path");
     let mut own = Vec::new();
     let gathered = if tree.exists(&manifest_path) {

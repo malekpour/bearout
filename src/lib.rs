@@ -49,6 +49,8 @@ use std::sync::atomic::AtomicBool;
 use serde_json::Value;
 
 pub use bootstrap::{Bootstrap, Limits, MANIFEST_NAME, STATE_NAME};
+pub use fixture::matching::Expectation;
+pub use fixture::{CaseResult, Matching, Outcome, TestReport};
 pub use generate::Mode;
 pub use paths::ProjectPath;
 pub use report::{Code, Diagnostic, Report, Severity, Side, SourceInfo};
@@ -159,6 +161,19 @@ pub fn generate(root: &Path, mode: Mode) -> Report {
     run(root, Command::Generate(mode), &Options::default())
 }
 
+/// Run the contract fixture suite the project at `root` declares in
+/// `[fixtures]`, reading the suite, the policy, and every case's inputs
+/// from [`Options::source`]. Read-only: each case checks a virtual
+/// candidate through an overlay, and nothing is written, formatted, or
+/// delivered. `Options::baseline` is refused; each case decides whether
+/// the unmodified source serves as its comparison baseline. Never panics
+/// on project content; a suite that cannot run is reported in
+/// [`TestReport::fatal`]. **Experimental.**
+#[must_use]
+pub fn test(root: &Path, options: &Options) -> TestReport {
+    fixture::run(root, options)
+}
+
 /// The tree a run reads, opened before anything else is read.
 enum Opened {
     Working(WorkingDir),
@@ -223,11 +238,11 @@ impl Opened {
         }
     }
 
-    fn universe<'a>(&self, root: &'a Path) -> hygiene::Universe<'a> {
-        match self {
-            Self::Working(_) => hygiene::Universe::WorkingDirectory(root),
-            Self::Git(..) => hygiene::Universe::Frozen,
-        }
+    /// The whole tree as a shared handle, for an overlay's base.
+    fn shared(&self) -> Result<Arc<dyn ReadTree>, String> {
+        self.tree()
+            .subtree(&ProjectPath::root())
+            .map_err(|error| format!("cannot open the project tree: {error}"))
     }
 
     fn info(&self) -> Option<SourceInfo> {
@@ -236,12 +251,38 @@ impl Opened {
             Self::Git(_, info) => Some(info.clone()),
         }
     }
+
+    fn writer(&self) -> Option<&WorkingDir> {
+        match self {
+            Self::Working(working) => Some(working),
+            Self::Git(..) => None,
+        }
+    }
+}
+
+/// The comparison baseline of one evaluation: a tree, how fatal messages
+/// name it, how the comparison view identifies it, and what the report
+/// records.
+struct BaselineInput<'a> {
+    tree: &'a dyn ReadTree,
+    label: String,
+    identity: policy::views::BaselineIdentity,
+    info: Option<SourceInfo>,
+}
+
+/// Everything one evaluation reads: the candidate tree and where its
+/// repository-wide file universe comes from, the source identity for the
+/// report, the optional baseline, and the delivery capability when the
+/// candidate is the working directory itself.
+struct Inputs<'a> {
+    tree: &'a dyn ReadTree,
+    universe: hygiene::Universe<'a>,
+    source: Option<SourceInfo>,
+    baseline: Option<BaselineInput<'a>>,
+    writer: Option<&'a WorkingDir>,
 }
 
 fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report, String> {
-    let mut report = Report::default();
-    let cancel = options.cancel.clone().unwrap_or_default();
-
     if command == Command::Generate(Mode::Write) && options.source != Source::WorkingDirectory {
         return Err(
             "generation writes to the working directory; the index and revision sources are read-only and support checking only"
@@ -261,15 +302,51 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         );
     }
 
-    // Phase: bootstrap. The sources are opened before anything is read, so
-    // every input of the run, the bootstrap included, comes from one tree,
-    // and the baseline is pinned before the candidate is examined.
+    // The sources are opened before anything is read, so every input of
+    // the run, the bootstrap included, comes from one tree, and the
+    // baseline is pinned before the candidate is examined. The baseline
+    // tree is historical evidence only; nothing is ever written to it, and
+    // it is dropped with the run.
     let opened = Opened::open(root, &options.source)?;
     let baseline = match &options.baseline {
         Some(revision) => Some(Baseline::open(root, revision)?),
         None => None,
     };
-    let tree = opened.tree();
+    let inputs = Inputs {
+        tree: opened.tree(),
+        universe: match &opened {
+            Opened::Working(_) => hygiene::Universe::WorkingDirectory {
+                root,
+                introduced: &[],
+            },
+            Opened::Git(..) => hygiene::Universe::Frozen,
+        },
+        source: opened.info(),
+        baseline: baseline.as_ref().map(|baseline| BaselineInput {
+            tree: &baseline.tree,
+            label: baseline.info.revision.clone().unwrap_or_default(),
+            identity: policy::views::BaselineIdentity::from(&baseline.info),
+            info: Some(baseline.info.clone()),
+        }),
+        writer: opened.writer(),
+    };
+    evaluate(root, command, options, &inputs)
+}
+
+/// One evaluation over already opened inputs: bootstrap, then every
+/// phase `command` asks for. The fixture runner calls this once per case
+/// with an overlay as the candidate.
+fn evaluate(
+    root: &Path,
+    command: Command,
+    options: &Options,
+    inputs: &Inputs<'_>,
+) -> Result<Report, String> {
+    let mut report = Report::default();
+    let cancel = options.cancel.clone().unwrap_or_default();
+    let tree = inputs.tree;
+
+    // Phase: bootstrap.
     let manifest_path = ProjectPath::parse(MANIFEST_NAME).expect("constant path");
     let manifest_text = tree
         .read_text(&manifest_path)
@@ -301,10 +378,10 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     // The formatting write: selection and reading as for a check, then
     // the transaction, and nothing else.
     if command == Command::Format {
-        let Opened::Working(working) = &opened else {
+        let Some(working) = inputs.writer else {
             unreachable!("rejected before the tree opened");
         };
-        let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
+        let selected = hygiene::select(tree, inputs.universe, &bootstrap, &bootstrap.limits)?;
         report.files = selected.len();
         let budget = hygiene::Budget::new(&bootstrap.limits);
         let mut diagnostics = Vec::new();
@@ -339,7 +416,7 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     // Phase: hygiene, for the candidate only: select, read once within one
     // budget, check the bytes against the tree's own `.editorconfig`
     // files, then hand only decodable, configured files to formatters.
-    let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
+    let selected = hygiene::select(tree, inputs.universe, &bootstrap, &bootstrap.limits)?;
     report.files = selected.len();
     let budget = hygiene::Budget::new(&bootstrap.limits);
     let mut hygiene_diagnostics = Vec::new();
@@ -362,8 +439,11 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     let policy = policy::load(tree, &bootstrap, cancel, &mut policy_diagnostics);
     report.extend(policy_diagnostics);
     let Some(policy) = policy else {
-        report.source = opened.info();
-        report.baseline = baseline.as_ref().map(|baseline| baseline.info.clone());
+        report.source.clone_from(&inputs.source);
+        report.baseline = inputs
+            .baseline
+            .as_ref()
+            .and_then(|baseline| baseline.info.clone());
         report.finish();
         return Ok(report);
     };
@@ -387,12 +467,12 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
 
     // The baseline is projected through the same steps with the candidate's
     // limits, policy, and shapes, and its own bootstrap selecting its paths.
-    let historical = match &baseline {
+    let historical = match &inputs.baseline {
         Some(baseline) => {
             let mut baseline_diagnostics = Vec::new();
             let projection = projection::baseline(
-                &baseline.tree,
-                baseline.info.revision.as_deref().unwrap_or_default(),
+                baseline.tree,
+                &baseline.label,
                 &bootstrap.limits,
                 &policy,
                 &shapes,
@@ -418,25 +498,27 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
 
     // Phase: repository policy. Change facts come from the surfaces both
     // sides recorded while reading, never from a second read.
-    let comparison = baseline
-        .as_ref()
-        .zip(historical.as_ref())
-        .map(|(baseline, projection)| {
-            let changes = changes::between(&projection.surface, &candidate.surface);
-            (
-                policy::views::SideView {
-                    info: Some(&baseline.info),
-                    resources: &projection.resources,
-                    indexes: projection.valid_indexes(),
-                    graph: &projection.graph,
-                    documents: &projection.documents,
-                },
-                changes,
-            )
-        });
+    let comparison =
+        inputs
+            .baseline
+            .as_ref()
+            .zip(historical.as_ref())
+            .map(|(baseline, projection)| {
+                let changes = changes::between(&projection.surface, &candidate.surface);
+                (
+                    policy::views::SideView {
+                        identity: Some(&baseline.identity),
+                        resources: &projection.resources,
+                        indexes: projection.valid_indexes(),
+                        graph: &projection.graph,
+                        documents: &projection.documents,
+                    },
+                    changes,
+                )
+            });
     let views = policy::views::Views::build(
         policy::views::SideView {
-            info: None,
+            identity: None,
             resources,
             indexes: valid_indexes.clone(),
             graph,
@@ -461,12 +543,10 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
         let planned = plan(&views, &policy, &mut report);
         if report.errors() == 0 {
             let mut diagnostics = Vec::new();
-            let delivery = match (mode, &opened) {
+            let delivery = match (mode, inputs.writer) {
                 (Mode::Check, _) => generate::Delivery::Check,
-                (Mode::Write, Opened::Working(working)) => {
-                    generate::Delivery::Write(working.writer())
-                }
-                (Mode::Write, Opened::Git(..)) => unreachable!("rejected before the tree opened"),
+                (Mode::Write, Some(working)) => generate::Delivery::Write(working.writer()),
+                (Mode::Write, None) => unreachable!("rejected before the tree opened"),
             };
             let outcome = generate::run(
                 tree,
@@ -485,13 +565,11 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
 
     report.max_ticks = policy.max_ticks.get();
     report.max_heap_bytes = policy.max_heap_bytes.get();
-    report.source = opened.info();
-    report.baseline = baseline.map(|baseline| {
-        // The baseline tree is historical evidence only; nothing is ever
-        // written to it, and dropping it here ends its life with the run.
-        drop(baseline.tree);
-        baseline.info
-    });
+    report.source.clone_from(&inputs.source);
+    report.baseline = inputs
+        .baseline
+        .as_ref()
+        .and_then(|baseline| baseline.info.clone());
     report.finish();
     Ok(report)
 }

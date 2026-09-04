@@ -14,10 +14,15 @@ use crate::tree::ReadTree;
 #[derive(Debug, Clone, Copy)]
 pub enum Universe<'a> {
     /// The live working directory at this root: Git lists the tracked and
-    /// untracked, non-ignored files, and the tree decides which still exist
-    /// as regular files.
-    WorkingDirectory(&'a Path),
-    /// A captured index or revision: the tree's own regular files.
+    /// untracked, non-ignored files, `introduced` adds the files a fixture
+    /// overlay presents beyond that listing, and the tree decides which of
+    /// them exist as regular files.
+    WorkingDirectory {
+        root: &'a Path,
+        introduced: &'a [ProjectPath],
+    },
+    /// A captured index or revision, or an overlay over one: the tree's
+    /// own regular files.
     Frozen,
 }
 
@@ -49,12 +54,13 @@ pub fn select(
     let mut candidates: BTreeSet<ProjectPath> = BTreeSet::new();
     match hygiene.scope {
         Scope::Repository => match universe {
-            Universe::WorkingDirectory(root) => {
-                let listed = git::working_files(root).map_err(|error| {
+            Universe::WorkingDirectory { root, introduced } => {
+                let mut listed = git::working_files(root).map_err(|error| {
                     format!(
                         "`hygiene.scope = \"repository\"` needs the project inside a Git repository (declare `scope = \"declared\"` with roots and files otherwise): {error}"
                     )
                 })?;
+                listed.extend(introduced.iter().cloned());
                 for path in listed {
                     // Listed but deleted, replaced by a directory, or a link:
                     // not a regular file of this working directory.
