@@ -29,6 +29,7 @@ mod fs;
 mod generate;
 mod git;
 mod graph;
+mod hygiene;
 mod identity;
 mod markdown;
 mod paths;
@@ -212,6 +213,13 @@ impl Opened {
         }
     }
 
+    fn universe<'a>(&self, root: &'a Path) -> hygiene::Universe<'a> {
+        match self {
+            Self::Working(_) => hygiene::Universe::WorkingDirectory(root),
+            Self::Git(..) => hygiene::Universe::Frozen,
+        }
+    }
+
     fn info(&self) -> Option<SourceInfo> {
         match self {
             Self::Working(_) => None,
@@ -281,6 +289,10 @@ fn run_inner(root: &Path, command: Command, options: &Options) -> Result<Report,
     report.extend(gathered_diagnostics);
     report.resources = gathered.files.len();
     report.documents = gathered.document_paths.len();
+
+    // Phase: hygiene selection, for the candidate only.
+    let selected = hygiene::select(tree, opened.universe(root), &bootstrap, &bootstrap.limits)?;
+    report.files = selected.len();
 
     // Repository policy is loaded before structural validation because the
     // entry module registers the schemas and shapes that validation needs.

@@ -282,6 +282,9 @@ pub struct Report {
     /// Number of discovered schema-less documents; zero when the bootstrap
     /// selects none.
     pub documents: usize,
+    /// Number of files selected for hygiene and formatting; zero when the
+    /// bootstrap selects none. Experimental.
+    pub files: usize,
     /// The Git-backed source examined, when one was selected. Experimental.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceInfo>,

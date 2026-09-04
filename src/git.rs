@@ -956,6 +956,46 @@ struct Captured {
     blobs: Mutex<Blobs>,
 }
 
+/// The files of the working directory as Git sees them: tracked files
+/// plus untracked files that are not ignored, beneath the project prefix,
+/// as project-relative paths in sorted order. Entries Git lists as
+/// directories (nested repositories, for instance) are dropped; whether a
+/// listed path still exists as a regular file on disk is for the caller
+/// to decide against the working tree. A name that is not a portable
+/// project path is an error.
+pub fn working_files(root: &Path) -> Result<Vec<ProjectPath>, GitError> {
+    let git = Git::new(root)?;
+    let location = git.locate()?;
+    let listing = git.output(&[
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--full-name",
+        "--",
+        ".",
+    ])?;
+    let mut files = Vec::new();
+    for raw in listing.split(|byte| *byte == 0) {
+        if raw.is_empty() || raw.ends_with(b"/") {
+            continue;
+        }
+        let Some(relative) = raw.strip_prefix(&location.prefix[..]) else {
+            continue;
+        };
+        match parse_git_path(relative) {
+            Ok(path) => files.push(path),
+            Err((_, problem)) => {
+                return Err(GitError(format!("the working directory {problem}")));
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 /// A frozen Git tree, or a directory inside one.
 pub struct GitTree {
     captured: Arc<Captured>,
